@@ -24,79 +24,142 @@
 
 #include "executor/nodeFunctionscan.h"
 #include "funcapi.h"
-#include "utils/builtins.h"
+#include "utils/memutils.h"		/* MemoryContextReset */
 
-
-static TupleTableSlot *FunctionNext(FunctionScanState *node);
-static void tupledesc_match(TupleDesc dst_tupdesc, TupleDesc src_tupdesc);
 
 /* ----------------------------------------------------------------
  *						Scan Support
  * ----------------------------------------------------------------
  */
 /* ----------------------------------------------------------------
+ *		FunctionMaterial
  *		FunctionNext
  *
  *		This is a workhorse for ExecFunctionScan
  * ----------------------------------------------------------------
  */
 static TupleTableSlot *
-FunctionNext(FunctionScanState *node)
+FunctionMaterial(ScanState *scanState)
 {
-	TupleTableSlot *slot;
-	EState	   *estate;
-	ScanDirection direction;
-	Tuplestorestate *tuplestorestate;
+	FunctionScanState *node = (FunctionScanState *) scanState;
+	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+	bool		forward = ScanDirectionIsForward(node->ss.ps.state->es_direction);
+
+	ExecClearTuple(slot);
 
 	/*
-	 * get information from the estate and scan state
+	 * Try to fetch a tuple from tuplestore.
 	 */
-	estate = node->ss.ps.state;
-	direction = estate->es_direction;
-
-	tuplestorestate = node->tuplestorestate;
-
-	/*
-	 * If first time through, read all tuples from function and put them in a
-	 * tuplestore. Subsequent calls just fetch tuples from tuplestore.
-	 */
-	if (tuplestorestate == NULL)
+	if (node->tuplestorestate)
 	{
-		ExprContext *econtext = node->ss.ps.ps_ExprContext;
-		TupleDesc	funcTupdesc;
-
-		node->tuplestorestate = tuplestorestate =
-			ExecMakeTableFunctionResult(node->funcexpr,
-										econtext,
-										node->tupdesc,
-										&funcTupdesc);
+		Tuplestorestate *tuplestorestate = node->tuplestorestate;
+		bool		eof_tuplestore = tuplestore_ateof(tuplestorestate);
 
 		/*
-		 * If function provided a tupdesc, cross-check it.	We only really
-		 * need to do this for functions returning RECORD, but might as well
-		 * do it always.
+		 * If we are not at the end of the tuplestore, or are going backwards,
+		 * try to fetch a tuple from tuplestore.
 		 */
-		if (funcTupdesc)
+		if (!forward && eof_tuplestore)
 		{
-			tupledesc_match(node->tupdesc, funcTupdesc);
+			if (!node->eof_underlying)
+			{
+				/*
+				 * When reversing direction at tuplestore EOF, the first
+				 * gettupleslot call will fetch the last-added tuple; but we
+				 * want to return the one before that, if possible. So do an
+				 * extra fetch.
+				 */
+				if (!tuplestore_advance(tuplestorestate, forward))
+					return slot;	/* the tuplestore must be empty */
+			}
+			eof_tuplestore = false;
+		}
+
+		/* Return next tuple (in the current scan direction) from tuplestore. */
+		if (!eof_tuplestore)
+		{
+			if (tuplestore_gettupleslot(tuplestorestate, forward, slot))
+				return slot;
 
 			/*
-			 * If it is a dynamically-allocated TupleDesc, free it: it is
-			 * typically allocated in the EState's per-query context, so we
-			 * must avoid leaking it on rescan.
+			 * Hit beginning of tuplestore reading backwards. Return empty
+			 * slot.
 			 */
-			if (funcTupdesc->tdrefcount == -1)
-				FreeTupleDesc(funcTupdesc);
+			if (!forward)
+				return slot;
 		}
 	}
 
 	/*
-	 * Get the next tuple from tuplestore. Return NULL if no more tuples.
+	 * Get next tuple from function.  Also gets a tuplestore if we don't
+	 * already have one.
 	 */
-	slot = node->ss.ss_ScanTupleSlot;
-	(void) tuplestore_gettupleslot(tuplestorestate,
-								   ScanDirectionIsForward(direction),
-								   slot);
+	if (!node->eof_underlying)
+	{
+		ExprContext *econtext = node->funcexprcontext;
+		MemoryContext oldcontext;
+
+		/* Switch to short-lived context for calling the function. */
+		oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+		if (!ExecMaterializeTableFunction(slot,
+										  node->returnstuple,
+										  &node->tuplestorestate,
+										  node->funcexpr,
+										  econtext))
+			node->eof_underlying = true;
+
+		/* Switch back to caller's context. */
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	Assert(node->eof_underlying == slot->tts_isempty);
+	return slot;
+}
+
+/*
+ * FunctionNext -- Forward scan, once only
+ */
+static TupleTableSlot *
+FunctionNext(ScanState *scanState)
+{
+	FunctionScanState *node = (FunctionScanState *) scanState;
+	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+	ExprContext *econtext = node->funcexprcontext;
+	MemoryContext oldcontext;
+	Datum		result;
+	ExprDoneCond isDone;
+	bool		isNull;
+
+	Assert(ScanDirectionIsForward(node->ss.ps.state->es_direction));
+
+	/* Clear out any previous result. */
+	ExecClearTuple(slot);
+
+	/* Reset the per-tuple memory context. */
+	ResetExprContext(econtext);
+
+	/* Return empty slot if no more data. */
+	if (node->eof_underlying)
+		return slot;
+
+	/* Switch to short-lived context for calling the function or expression. */
+	oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	/* Get function's next result value. */
+	result = ExecEvalExpr(node->funcexpr, econtext, &isNull, &isDone);
+
+	/* If result is a singleton, or no more data, we'll return EOD next time. */
+	if (isDone != ExprMultipleResult)
+		node->eof_underlying = true;
+
+	/* Store result in slot. */
+	if (isDone != ExprEndResult)
+		ExecStoreSlotTupleDatum(slot, result, isNull, node->returnstuple);
+
+	/* Restore caller's context. */
+	MemoryContextSwitchTo(oldcontext);
+
 	return slot;
 }
 
@@ -105,18 +168,17 @@ FunctionNext(FunctionScanState *node)
  *
  *		Scans the function sequentially and returns the next qualifying
  *		tuple.
- *		It calls the ExecScan() routine and passes it the access method
- *		which retrieves tuples sequentially.
- *
+ *		We call the ExecScan() routine and pass it the appropriate
+ *		access method functions.
+ * ----------------------------------------------------------------
  */
-
 TupleTableSlot *
 ExecFunctionScan(FunctionScanState *node)
 {
-	/*
-	 * use FunctionNext as access method
-	 */
-	return ExecScan(&node->ss, (ExecScanAccessMtd) FunctionNext);
+	if (node->materialize)
+		return ExecScan(&node->ss, FunctionMaterial);
+	else
+		return ExecScan(&node->ss, FunctionNext);
 }
 
 /* ----------------------------------------------------------------
@@ -127,13 +189,13 @@ FunctionScanState *
 ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 {
 	FunctionScanState *scanstate;
-	Oid			funcrettype;
-	TypeFuncClass functypclass;
-	TupleDesc	tupdesc = NULL;
+	TupleDesc	tupdesc;
+	const char *scalarattname;
 
-	/*
-	 * FunctionScan should not have any children.
-	 */
+	/* check for unsupported flags */
+	Assert(!(eflags & EXEC_FLAG_MARK));
+
+	/* FunctionScan should not have any children. */
 	Assert(outerPlan(node) == NULL);
 	Assert(innerPlan(node) == NULL);
 
@@ -145,11 +207,15 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.state = estate;
 
 	/*
-	 * Miscellaneous initialization
-	 *
-	 * create expression context for node
+	 * Create two expression contexts: one for evaluating the projection and
+	 * quals, and another for the function expression.	We separate them so
+	 * each can have its own list of ExprContext callback functions.  In case
+	 * the projection contains more than one set-valued expression, and one
+	 * refuses to restart, then ExecTargetList can call ShutdownExprContext to
+	 * reset the others... we don't want this to affect our table function.
 	 */
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
+	scanstate->funcexprcontext = CreateExprContext(estate);
 
 #define FUNCTIONSCAN_NSLOTS 2
 
@@ -170,63 +236,55 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 					 (PlanState *) scanstate);
 
 	/*
-	 * Now determine if the function returns a simple or composite type, and
-	 * build an appropriate tupdesc.
+	 * Build tuple descriptor for the expected result of the expression. Find
+	 * out whether the result will be a scalar or composite type.
 	 */
-	functypclass = get_expr_result_type(node->funcexpr,
-										&funcrettype,
-										&tupdesc);
+	scalarattname = NULL;
+	if (node->funccolnames)
+		scalarattname = strVal(linitial(node->funccolnames));
 
-	if (functypclass == TYPEFUNC_COMPOSITE)
-	{
-		/* Composite data type, e.g. a table's row type */
-		Assert(tupdesc);
-		/* Must copy it out of typcache for safety */
-		tupdesc = CreateTupleDescCopy(tupdesc);
-	}
-	else if (functypclass == TYPEFUNC_SCALAR)
-	{
-		/* Base data type, i.e. scalar */
-		char	   *attname = strVal(linitial(node->funccolnames));
+	get_expr_result_tupdesc((Expr *) node->funcexpr,
+							scalarattname,
+							&tupdesc,
+							&scanstate->returnstuple);
 
-		tupdesc = CreateTemplateTupleDesc(1, false);
-		TupleDescInitEntry(tupdesc,
-						   (AttrNumber) 1,
-						   attname,
-						   funcrettype,
-						   -1,
-						   0);
-	}
-	else if (functypclass == TYPEFUNC_RECORD)
+	/*
+	 * If type is RECORD, build tupdesc from the column names and types given
+	 * explicitly in the query:  FROM f(args) AS alias(colname, coltype, ...).
+	 *
+	 * If the resultcol lists are empty, we build a 0-column tuple descriptor,
+	 * and the function must return columnless tuples.
+	 */
+	if (scanstate->returnstuple && !tupdesc)
 	{
 		tupdesc = BuildDescFromLists(node->funccolnames,
 									 node->funccoltypes,
 									 node->funccoltypmods);
+		BlessTupleDesc(tupdesc);
 	}
-	else
+	else if (!tupdesc)
 	{
 		/* crummy error message, but parser should have caught this */
 		elog(ERROR, "function in FROM has unsupported return type");
 	}
 
-	/*
-	 * For RECORD results, make sure a typmod has been assigned.  (The
-	 * function should do this for itself, but let's cover things in case it
-	 * doesn't.)
-	 */
-	BlessTupleDesc(tupdesc);
-
-	scanstate->tupdesc = tupdesc;
 	ExecAssignScanType(&scanstate->ss, tupdesc);
 
 	/*
-	 * Other node-specific setup
+	 * Should we save the function results in a tuplestore?
 	 */
 	scanstate->tuplestorestate = NULL;
-	scanstate->funcexpr = ExecInitExpr((Expr *) node->funcexpr,
-									   (PlanState *) scanstate);
+	if (eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_REWIND))
+		scanstate->materialize = true;
 
-	scanstate->ss.ps.ps_TupFromTlist = false;
+	/*
+	 * Initialize the function expression.
+	 */
+	scanstate->funcexpr = ExecInitTableFunction((Expr *) node->funcexpr,
+												(PlanState *) scanstate,
+												scanstate->funcexprcontext,
+												tupdesc,
+												scanstate->returnstuple);
 
 	/*
 	 * Initialize result tuple type and projection info.
@@ -254,59 +312,15 @@ ExecCountSlotsFunctionScan(FunctionScan *node)
 void
 ExecEndFunctionScan(FunctionScanState *node)
 {
-	/*
-	 * Free the exprcontext
-	 */
 	ExecFreeExprContext(&node->ss.ps);
 
-	/*
-	 * clean out the tuple table
-	 */
+	/* clean out the tuple table */
 	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
-	/*
-	 * Release tuplestore resources
-	 */
-	if (node->tuplestorestate != NULL)
+	/* Free the tuplestore. */
+	if (node->tuplestorestate)
 		tuplestore_end(node->tuplestorestate);
-	node->tuplestorestate = NULL;
-}
-
-/* ----------------------------------------------------------------
- *		ExecFunctionMarkPos
- *
- *		Calls tuplestore to save the current position in the stored file.
- * ----------------------------------------------------------------
- */
-void
-ExecFunctionMarkPos(FunctionScanState *node)
-{
-	/*
-	 * if we haven't materialized yet, just return.
-	 */
-	if (!node->tuplestorestate)
-		return;
-
-	tuplestore_markpos(node->tuplestorestate);
-}
-
-/* ----------------------------------------------------------------
- *		ExecFunctionRestrPos
- *
- *		Calls tuplestore to restore the last saved file position.
- * ----------------------------------------------------------------
- */
-void
-ExecFunctionRestrPos(FunctionScanState *node)
-{
-	/*
-	 * if we haven't materialized yet, just return.
-	 */
-	if (!node->tuplestorestate)
-		return;
-
-	tuplestore_restorepos(node->tuplestorestate);
 }
 
 /* ----------------------------------------------------------------
@@ -319,73 +333,31 @@ void
 ExecFunctionReScan(FunctionScanState *node, ExprContext *exprCtxt)
 {
 	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
 	node->ss.ps.ps_TupFromTlist = false;
+
+	/* Reset the function expression. */
+	ReScanExprContext(node->funcexprcontext);
 
 	/*
 	 * If we haven't materialized yet, just return.
 	 */
 	if (!node->tuplestorestate)
-		return;
+		node->eof_underlying = false;
 
 	/*
 	 * Here we have a choice whether to drop the tuplestore (and recompute the
-	 * function outputs) or just rescan it.  This should depend on whether the
-	 * function expression contains parameters and/or is marked volatile.
-	 * FIXME soon.
+	 * function outputs) or just rescan it.  We must recompute if the
+	 * expression contains parameters, else we rescan.	XXX maybe we should
+	 * recompute if the function is volatile?
 	 */
-	if (node->ss.ps.chgParam != NULL)
+	else if (node->ss.ps.chgParam != NULL)
 	{
 		tuplestore_end(node->tuplestorestate);
 		node->tuplestorestate = NULL;
+		node->eof_underlying = false;
 	}
 	else
 		tuplestore_rescan(node->tuplestorestate);
-}
-
-/*
- * Check that function result tuple type (src_tupdesc) matches or can
- * be considered to match what the query expects (dst_tupdesc). If
- * they don't match, ereport.
- *
- * We really only care about number of attributes and data type.
- * Also, we can ignore type mismatch on columns that are dropped in the
- * destination type, so long as the physical storage matches.  This is
- * helpful in some cases involving out-of-date cached plans.
- */
-static void
-tupledesc_match(TupleDesc dst_tupdesc, TupleDesc src_tupdesc)
-{
-	int			i;
-
-	if (dst_tupdesc->natts != src_tupdesc->natts)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("function return row and query-specified return row do not match"),
-				 errdetail("Returned row contains %d attributes, but query expects %d.",
-						   src_tupdesc->natts, dst_tupdesc->natts)));
-
-	for (i = 0; i < dst_tupdesc->natts; i++)
-	{
-		Form_pg_attribute dattr = dst_tupdesc->attrs[i];
-		Form_pg_attribute sattr = src_tupdesc->attrs[i];
-
-		if (dattr->atttypid == sattr->atttypid)
-			continue;			/* no worries */
-		if (!dattr->attisdropped)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
-					 errmsg("function return row and query-specified return row do not match"),
-					 errdetail("Returned type %s at ordinal position %d, but query expects %s.",
-							   format_type_be(sattr->atttypid),
-							   i + 1,
-							   format_type_be(dattr->atttypid))));
-
-		if (dattr->attlen != sattr->attlen ||
-			dattr->attalign != sattr->attalign)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
-					 errmsg("function return row and query-specified return row do not match"),
-					 errdetail("Physical storage mismatch on dropped attribute at ordinal position %d.",
-							   i + 1)));
-	}
 }

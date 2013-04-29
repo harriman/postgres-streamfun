@@ -21,7 +21,8 @@
 #include "catalog/pg_type.h"
 #include "commands/explain.h"
 #include "commands/prepare.h"
-#include "miscadmin.h"
+#include "funcapi.h"			/* init_materialize_mode */
+#include "nodes/nodeFuncs.h"
 #include "parser/analyze.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_expr.h"
@@ -31,7 +32,6 @@
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
-#include "utils/memutils.h"
 
 
 /*
@@ -716,26 +716,8 @@ ExplainExecuteQuery(ExecuteStmt *execstmt, ExplainStmt *stmt,
 Datum
 pg_prepared_statement(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
-
-	/* need to build tuplestore in query context */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
 	/*
 	 * build tupdesc for result tuples. This must match the definition of the
@@ -757,10 +739,7 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 	 * We put all the tuples into a tuplestore in one scan of the hashtable.
 	 * This avoids any issue of the hashtable possibly changing between calls.
 	 */
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-
-	/* generate junk in short-term context */
-	MemoryContextSwitchTo(oldcontext);
+	tupstore = init_materialize_mode(fcinfo, tupdesc);
 
 	/* hash table might be uninitialized */
 	if (prepared_queries)
@@ -771,7 +750,6 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 		hash_seq_init(&hash_seq, prepared_queries);
 		while ((prep_stmt = hash_seq_search(&hash_seq)) != NULL)
 		{
-			HeapTuple	tuple;
 			Datum		values[5];
 			bool		nulls[5];
 
@@ -791,18 +769,12 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 										  prep_stmt->plansource->num_params);
 			values[4] = BoolGetDatum(prep_stmt->from_sql);
 
-			tuple = heap_form_tuple(tupdesc, values, nulls);
-			tuplestore_puttuple(tupstore, tuple);
+			tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
 	}
 
 	/* clean up and return the tuplestore */
 	tuplestore_donestoring(tupstore);
-
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
 	return (Datum) 0;
 }
 

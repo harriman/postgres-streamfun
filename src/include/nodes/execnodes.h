@@ -85,7 +85,7 @@ typedef struct ExprContext_CB
  *		what the current inner tuple is and so we look at the expression
  *		context.
  *
- *	There are two memory contexts associated with an ExprContext:
+ *	There are two or three memory contexts associated with an ExprContext:
  *	* ecxt_per_query_memory is a query-lifespan context, typically the same
  *	  context the ExprContext node itself is allocated in.	This context
  *	  can be used for purposes such as storing function call cache info.
@@ -93,6 +93,9 @@ typedef struct ExprContext_CB
  *	  As the name suggests, it will typically be reset once per tuple,
  *	  before we begin to evaluate expressions for that tuple.  Each
  *	  ExprContext normally has its very own per-tuple memory context.
+ *	* ecxt_projection_tuple_memory is a short-term context for results of
+ *	  projection (targetlist) expressions.	It's created only if needed, and
+ *	  reset before evaluating the projection expressions.
  *
  *	CurrentMemoryContext should be set to ecxt_per_tuple_memory before
  *	calling ExecEvalExpr() --- see ExecEvalExprSwitchContext().
@@ -132,6 +135,9 @@ typedef struct ExprContext
 
 	/* Functions to call back when ExprContext is shut down */
 	ExprContext_CB *ecxt_callbacks;
+
+	/* Memory context for evaluating projection expressions */
+	MemoryContext projection_tuple_memory;
 } ExprContext;
 
 /*
@@ -191,16 +197,25 @@ typedef struct ReturnSetInfo
  *
  *		The planner very often produces tlists that consist entirely of
  *		simple Var references (lower levels of a plan tree almost always
- *		look like that).  So we have an optimization to handle that case
- *		with minimum overhead.
+ *		look like that).  And top-level tlists are often mostly Vars too.
+ *		We therefore optimize execution of simple-Var tlist entries.
+ *		The pi_targetlist list actually contains only the tlist entries that
+ *		aren't simple Vars, while those that are Vars are processed using the
+ *		varSlotOffsets/varNumbers/varOutputCols arrays.
  *
- *		targetlist		target list for projection
+ *		The lastXXXVar fields are used to optimize fetching of fields from
+ *		input tuples: they let us do a slot_getsomeattrs() call to ensure
+ *		that all needed attributes are extracted in one pass.
+ *
+ *		targetlist		target list for projection (non-Var expressions only)
  *		exprContext		expression context in which to evaluate targetlist
  *		slot			slot to place projection result in
- *		itemIsDone		workspace for ExecProject
- *		isVarList		TRUE if simple-Var-list optimization applies
+ *		itemIsDone		workspace array for ExecProject
+ *		directMap		true if varOutputCols[] is an identity map
+ *		numSimpleVars	number of simple Vars found in original tlist
  *		varSlotOffsets	array indicating which slot each simple Var is from
- *		varNumbers		array indicating attr numbers of simple Vars
+ *		varNumbers		array containing input attr numbers of simple Vars
+ *		varOutputCols	array containing output attr numbers of simple Vars
  *		lastInnerVar	highest attnum from inner tuple slot (0 if none)
  *		lastOuterVar	highest attnum from outer tuple slot (0 if none)
  *		lastScanVar		highest attnum from scan tuple slot (0 if none)
@@ -213,9 +228,11 @@ typedef struct ProjectionInfo
 	ExprContext *pi_exprContext;
 	TupleTableSlot *pi_slot;
 	ExprDoneCond *pi_itemIsDone;
-	bool		pi_isVarList;
+	bool		pi_directMap;
+	int			pi_numSimpleVars;
 	int		   *pi_varSlotOffsets;
 	int		   *pi_varNumbers;
+	int		   *pi_varOutputCols;
 	int			pi_lastInnerVar;
 	int			pi_lastOuterVar;
 	int			pi_lastScanVar;
@@ -545,6 +562,7 @@ typedef struct ArrayRefExprState
 typedef struct FuncExprState
 {
 	ExprState	xprstate;
+	Oid			funcid;			/* OID of function */
 	List	   *args;			/* states of argument expressions */
 
 	/*
@@ -553,36 +571,24 @@ typedef struct FuncExprState
 	 */
 	FmgrInfo	func;
 
-	/*
-	 * We also need to store argument values across calls when evaluating a
-	 * function-returning-set.
-	 *
-	 * setArgsValid is true when we are evaluating a set-valued function and
-	 * we are in the middle of a call series; we want to pass the same
-	 * argument values to the function again (and again, until it returns
-	 * ExprEndResult).
-	 */
-	bool		setArgsValid;
+	/* At most one argument can be a set-valued expression... */
+	ExprDoneCond argIsDone;		/* set-valued argument state */
 
-	/*
-	 * Flag to remember whether we found a set-valued argument to the
-	 * function. This causes the function result to be a set as well. Valid
-	 * only when setArgsValid is true.
-	 */
-	bool		setHasSetArg;	/* some argument returns a set */
+	/* SRF protocol state is shared with the function via fcinfo->resultinfo. */
+	ReturnSetInfo rsinfo;
 
-	/*
-	 * Flag to remember whether we have registered a shutdown callback for
-	 * this FuncExprState.	We do so only if setArgsValid has been true at
-	 * least once (since all the callback is for is to clear setArgsValid).
-	 */
-	bool		shutdown_reg;	/* a shutdown callback is registered */
+	/* For set-returning functions that use materialize mode... */
+	TupleTableSlot *dematerializeSlot;	/* holds a result row from tuplestore */
+	bool		funcReturnsTuple;		/* when reading from tuplestore......
+										 * true => return whole tuple as row;
+										 * false => return tuple's 1st column */
 
-	/*
-	 * Current argument data for a set-valued function; contains valid data
-	 * only if setArgsValid is true.
-	 */
-	FunctionCallInfoData setArgs;
+	/* For functions that might need repeated calls with same arguments... */
+	MemoryContext argEvalContext;		/* reset before evaluating args */
+	FunctionCallInfo setArgs;
+
+	/* Cleanup for SRFs and functions with set-valued arguments */
+	bool		shutdown_reg;	/* true => a shutdown callback is registered */
 } FuncExprState;
 
 /* ----------------
@@ -1140,17 +1146,20 @@ typedef struct SubqueryScanState
  *		Function nodes are used to scan the results of a
  *		function appearing in FROM (typically a function returning set).
  *
- *		tupdesc				expected return tuple description
- *		tuplestorestate		private state of tuplestore.c
+ *		tuplestorestate		private state of tuplestore.
+ *		funcexprcontext		context in which to evaluate funcexpr
  *		funcexpr			state for function expression being evaluated
  * ----------------
  */
 typedef struct FunctionScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
-	TupleDesc	tupdesc;
 	Tuplestorestate *tuplestorestate;
+	ExprContext *funcexprcontext;
 	ExprState  *funcexpr;
+	bool		returnstuple;
+	bool		materialize;
+	bool		eof_underlying; /* reached end of underlying plan? */
 } FunctionScanState;
 
 /* ----------------

@@ -78,7 +78,8 @@ typedef struct remoteConn
 /*
  * Internal declarations
  */
-static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async, bool do_get);
+static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async);
+static void materializeResult(FunctionCallInfo fcinfo, Tuplestorestate *tupstore, PGresult *res);
 static remoteConn *getConnectionByName(const char *name);
 static HTAB *createConnHash(void);
 static void createNewConnection(const char *name, remoteConn * rconn);
@@ -95,6 +96,7 @@ static HeapTuple get_tuple_of_interest(Relation rel, int *pkattnums, int pknumat
 static Relation get_rel_from_relname(text *relname_text, LOCKMODE lockmode, AclMode aclmode);
 static char *generate_relation_name(Relation rel);
 static void dblink_security_check(PGconn *conn, remoteConn *rconn);
+static void dblink_res_error(const char *conname, PGresult *res, const char *dblink_context_msg, bool fail);
 static void validate_pkattnums(Relation rel,
 				   int2vector *pkattnums_arg, int32 pknumatts_arg,
 				   int **pkattnums, int *pknumatts);
@@ -129,6 +131,14 @@ typedef struct remoteConnHashEnt
 			pfree(var_); \
 			var_ = NULL; \
 		} \
+	} while (0)
+
+#define xpstrdup(var_c, var_) \
+	do { \
+		if (var_ != NULL) \
+			var_c = pstrdup(var_); \
+		else \
+			var_c = NULL; \
 	} while (0)
 
 #define DBLINK_RES_INTERNALERROR(p2) \
@@ -720,302 +730,266 @@ PG_FUNCTION_INFO_V1(dblink_record);
 Datum
 dblink_record(PG_FUNCTION_ARGS)
 {
-	return dblink_record_internal(fcinfo, false, false);
+	return dblink_record_internal(fcinfo, false);
 }
 
 PG_FUNCTION_INFO_V1(dblink_send_query);
 Datum
 dblink_send_query(PG_FUNCTION_ARGS)
 {
-	return dblink_record_internal(fcinfo, true, false);
+	PGconn	   *conn = NULL;
+	char	   *connstr = NULL;
+	char	   *sql = NULL;
+	remoteConn *rconn = NULL;
+	char	   *msg;
+	bool		freeconn = false;
+	int			retval;
+
+	if (PG_NARGS() == 2)
+	{
+		DBLINK_GET_CONN;
+		sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	}
+	else
+		/* shouldn't happen */
+		elog(ERROR, "wrong number of arguments");
+
+	/* async query send */
+	retval = PQsendQuery(conn, sql);
+	if (retval != 1)
+		elog(NOTICE, "%s", PQerrorMessage(conn));
+
+	PG_RETURN_INT32(retval);
 }
 
 PG_FUNCTION_INFO_V1(dblink_get_result);
 Datum
 dblink_get_result(PG_FUNCTION_ARGS)
 {
-	return dblink_record_internal(fcinfo, true, true);
+	return dblink_record_internal(fcinfo, true);
 }
 
 static Datum
-dblink_record_internal(FunctionCallInfo fcinfo, bool is_async, bool do_get)
+dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 {
-	FuncCallContext *funcctx;
-	TupleDesc	tupdesc = NULL;
-	int			call_cntr;
-	int			max_calls;
-	AttInMetadata *attinmeta;
+	Tuplestorestate *tupstore;
 	char	   *msg;
 	PGresult   *res = NULL;
-	bool		is_sql_cmd = false;
-	char	   *sql_cmd_status = NULL;
-	MemoryContext oldcontext;
+	PGconn	   *conn = NULL;
+	char	   *connstr = NULL;
+	char	   *sql = NULL;
+	char	   *conname = NULL;
+	remoteConn *rconn = NULL;
+	bool		fail = true;	/* default to backward compatible */
 	bool		freeconn = false;
+
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = init_materialize_mode(fcinfo, NULL);
 
 	DBLINK_INIT;
 
-	/* stuff done only on the first call of the function */
-	if (SRF_IS_FIRSTCALL())
+	if (!is_async)
 	{
-		PGconn	   *conn = NULL;
-		char	   *connstr = NULL;
-		char	   *sql = NULL;
-		char	   *conname = NULL;
-		remoteConn *rconn = NULL;
-		bool		fail = true;	/* default to backward compatible */
-
-		/* create a function context for cross-call persistence */
-		funcctx = SRF_FIRSTCALL_INIT();
-
-		/*
-		 * switch to memory context appropriate for multiple function calls
-		 */
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-		if (!is_async)
+		if (PG_NARGS() == 3)
 		{
-			if (PG_NARGS() == 3)
-			{
-				/* text,text,bool */
-				DBLINK_GET_CONN;
-				sql = GET_STR(PG_GETARG_TEXT_P(1));
-				fail = PG_GETARG_BOOL(2);
-			}
-			else if (PG_NARGS() == 2)
-			{
-				/* text,text or text,bool */
-				if (get_fn_expr_argtype(fcinfo->flinfo, 1) == BOOLOID)
-				{
-					conn = pconn->conn;
-					sql = GET_STR(PG_GETARG_TEXT_P(0));
-					fail = PG_GETARG_BOOL(1);
-				}
-				else
-				{
-					DBLINK_GET_CONN;
-					sql = GET_STR(PG_GETARG_TEXT_P(1));
-				}
-			}
-			else if (PG_NARGS() == 1)
-			{
-				/* text */
-				conn = pconn->conn;
-				sql = GET_STR(PG_GETARG_TEXT_P(0));
-			}
-			else
-				/* shouldn't happen */
-				elog(ERROR, "wrong number of arguments");
+			/* text,text,bool */
+			DBLINK_GET_CONN;
+			sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
+			fail = PG_GETARG_BOOL(2);
 		}
-		else if (is_async && do_get)
+		else if (PG_NARGS() == 2)
 		{
-			/* get async result */
-			if (PG_NARGS() == 2)
+			/* text,text or text,bool */
+			if (get_fn_expr_argtype(fcinfo->flinfo, 1) == BOOLOID)
 			{
-				/* text,bool */
-				DBLINK_GET_CONN;
+				conn = pconn->conn;
+				sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 				fail = PG_GETARG_BOOL(1);
 			}
-			else if (PG_NARGS() == 1)
-			{
-				/* text */
-				DBLINK_GET_CONN;
-			}
 			else
-				/* shouldn't happen */
-				elog(ERROR, "wrong number of arguments");
-		}
-		else
-		{
-			/* send async query */
-			if (PG_NARGS() == 2)
 			{
 				DBLINK_GET_CONN;
-				sql = GET_STR(PG_GETARG_TEXT_P(1));
+				sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
 			}
-			else
-				/* shouldn't happen */
-				elog(ERROR, "wrong number of arguments");
 		}
-
-		if (!conn)
-			DBLINK_CONN_NOT_AVAIL;
-
-		if (!is_async || (is_async && do_get))
+		else if (PG_NARGS() == 1)
 		{
-			/* synchronous query, or async result retrieval */
-			if (!is_async)
-				res = PQexec(conn, sql);
-			else
-			{
-				res = PQgetResult(conn);
-				/* NULL means we're all done with the async results */
-				if (!res)
-				{
-					MemoryContextSwitchTo(oldcontext);
-					SRF_RETURN_DONE(funcctx);
-				}
-			}
-
-			if (!res ||
-				(PQresultStatus(res) != PGRES_COMMAND_OK &&
-				 PQresultStatus(res) != PGRES_TUPLES_OK))
-			{
-				if (fail)
-					DBLINK_RES_ERROR("sql error");
-				else
-				{
-					DBLINK_RES_ERROR_AS_NOTICE("sql error");
-					if (freeconn)
-						PQfinish(conn);
-					MemoryContextSwitchTo(oldcontext);
-					SRF_RETURN_DONE(funcctx);
-				}
-			}
-
-			if (PQresultStatus(res) == PGRES_COMMAND_OK)
-			{
-				is_sql_cmd = true;
-
-				/* need a tuple descriptor representing one TEXT column */
-				tupdesc = CreateTemplateTupleDesc(1, false);
-				TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
-								   TEXTOID, -1, 0);
-
-				/*
-				 * and save a copy of the command status string to return as
-				 * our result tuple
-				 */
-				sql_cmd_status = PQcmdStatus(res);
-				funcctx->max_calls = 1;
-			}
-			else
-				funcctx->max_calls = PQntuples(res);
-
-			/* got results, keep track of them */
-			funcctx->user_fctx = res;
-
-			/* if needed, close the connection to the database and cleanup */
-			if (freeconn)
-				PQfinish(conn);
-
-			if (!is_sql_cmd)
-			{
-				/* get a tuple descriptor for our result type */
-				switch (get_call_result_type(fcinfo, NULL, &tupdesc))
-				{
-					case TYPEFUNC_COMPOSITE:
-						/* success */
-						break;
-					case TYPEFUNC_RECORD:
-						/* failed to determine actual type of RECORD */
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("function returning record called in context "
-							   "that cannot accept type record")));
-						break;
-					default:
-						/* result type isn't composite */
-						elog(ERROR, "return type must be a row type");
-						break;
-				}
-
-				/* make sure we have a persistent copy of the tupdesc */
-				tupdesc = CreateTupleDescCopy(tupdesc);
-			}
-
-			/*
-			 * check result and tuple descriptor have the same number of
-			 * columns
-			 */
-			if (PQnfields(res) != tupdesc->natts)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATATYPE_MISMATCH),
-						 errmsg("remote query result rowtype does not match "
-								"the specified FROM clause rowtype")));
-
-			/* fast track when no results */
-			if (funcctx->max_calls < 1)
-			{
-				if (res)
-					PQclear(res);
-				MemoryContextSwitchTo(oldcontext);
-				SRF_RETURN_DONE(funcctx);
-			}
-
-			/* store needed metadata for subsequent calls */
-			attinmeta = TupleDescGetAttInMetadata(tupdesc);
-			funcctx->attinmeta = attinmeta;
-
-			MemoryContextSwitchTo(oldcontext);
+			/* text */
+			conn = pconn->conn;
+			sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 		}
 		else
+			/* shouldn't happen */
+			elog(ERROR, "wrong number of arguments");
+	}
+	else	/* is_async */
+	{
+		/* get async result */
+		if (PG_NARGS() == 2)
 		{
-			/* async query send */
-			MemoryContextSwitchTo(oldcontext);
-			PG_RETURN_INT32(PQsendQuery(conn, sql));
+			/* text,bool */
+			DBLINK_GET_CONN;
+			fail = PG_GETARG_BOOL(1);
 		}
-	}
-
-	if (is_async && !do_get)
-	{
-		/* async query send -- should not happen */
-		elog(ERROR, "async query send called more than once");
-
-	}
-
-	/* stuff done on every call of the function */
-	funcctx = SRF_PERCALL_SETUP();
-
-	/*
-	 * initialize per-call variables
-	 */
-	call_cntr = funcctx->call_cntr;
-	max_calls = funcctx->max_calls;
-
-	res = (PGresult *) funcctx->user_fctx;
-	attinmeta = funcctx->attinmeta;
-	tupdesc = attinmeta->tupdesc;
-
-	if (call_cntr < max_calls)	/* do when there is more left to send */
-	{
-		char	  **values;
-		HeapTuple	tuple;
-		Datum		result;
-
-		if (!is_sql_cmd)
+		else if (PG_NARGS() == 1)
 		{
-			int			i;
-			int			nfields = PQnfields(res);
-
-			values = (char **) palloc(nfields * sizeof(char *));
-			for (i = 0; i < nfields; i++)
-			{
-				if (PQgetisnull(res, call_cntr, i) == 0)
-					values[i] = PQgetvalue(res, call_cntr, i);
-				else
-					values[i] = NULL;
-			}
+			/* text */
+			DBLINK_GET_CONN;
 		}
 		else
-		{
-			values = (char **) palloc(1 * sizeof(char *));
-			values[0] = sql_cmd_status;
-		}
-
-		/* build the tuple */
-		tuple = BuildTupleFromCStrings(attinmeta, values);
-
-		/* make the tuple into a datum */
-		result = HeapTupleGetDatum(tuple);
-
-		SRF_RETURN_NEXT(funcctx, result);
+			/* shouldn't happen */
+			elog(ERROR, "wrong number of arguments");
 	}
+
+	if (!conn)
+		DBLINK_CONN_NOT_AVAIL;
+
+	/* synchronous query, or async result retrieval */
+	if (!is_async)
+		res = PQexec(conn, sql);
 	else
 	{
-		/* do when there is no more left */
-		PQclear(res);
-		SRF_RETURN_DONE(funcctx);
+		res = PQgetResult(conn);
+		/* NULL means we're all done with the async results */
+		if (!res)
+			return (Datum) 0;
 	}
+
+	/* if needed, close the connection to the database and cleanup */
+	if (freeconn)
+		PQfinish(conn);
+
+	if (!res ||
+		(PQresultStatus(res) != PGRES_COMMAND_OK &&
+		 PQresultStatus(res) != PGRES_TUPLES_OK))
+	{
+		dblink_res_error(conname, res, "could not execute query", fail);
+		return (Datum) 0;
+	}
+
+	materializeResult(fcinfo, tupstore, res);
+	return (Datum) 0;
+}
+
+/*
+ * Materialize the PGresult to return them as the function result.
+ * The res will be released in this function.
+ */
+static void
+materializeResult(FunctionCallInfo fcinfo, Tuplestorestate *tupstore, PGresult *res)
+{
+	PG_TRY();
+	{
+		TupleDesc	tupdesc;
+		bool		is_sql_cmd = false;
+		int			ntuples;
+		int			nfields;
+
+		if (PQresultStatus(res) == PGRES_COMMAND_OK)
+		{
+			is_sql_cmd = true;
+
+			/*
+			 * need a tuple descriptor representing one TEXT column to return
+			 * the command status string as our result tuple
+			 */
+			tupdesc = CreateTemplateTupleDesc(1, false);
+			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
+							   TEXTOID, -1, 0);
+			ntuples = 1;
+			nfields = 1;
+		}
+		else
+		{
+			Assert(PQresultStatus(res) == PGRES_TUPLES_OK);
+
+			is_sql_cmd = false;
+
+			/* get a tuple descriptor for our result type */
+			switch (get_call_result_type(fcinfo, NULL, &tupdesc))
+			{
+				case TYPEFUNC_COMPOSITE:
+					/* success */
+					break;
+				case TYPEFUNC_RECORD:
+					/* failed to determine actual type of RECORD */
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("function returning record called in context "
+							   "that cannot accept type record")));
+					break;
+				default:
+					/* result type isn't composite */
+					elog(ERROR, "return type must be a row type");
+					break;
+			}
+
+			ntuples = PQntuples(res);
+			nfields = PQnfields(res);
+		}
+
+		/*
+		 * check result and tuple descriptor have the same number of columns
+		 */
+		if (nfields != tupdesc->natts)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("remote query result rowtype does not match "
+							"the specified FROM clause rowtype")));
+
+		if (ntuples > 0)
+		{
+			AttInMetadata *attinmeta;
+			int			row;
+			char	  **values;
+
+			attinmeta = TupleDescGetAttInMetadata(tupdesc);
+
+			values = (char **) palloc(nfields * sizeof(char *));
+
+			/* put all tuples into the tuplestore */
+			for (row = 0; row < ntuples; row++)
+			{
+				HeapTuple	tuple;
+
+				if (!is_sql_cmd)
+				{
+					int			i;
+
+					for (i = 0; i < nfields; i++)
+					{
+						if (PQgetisnull(res, row, i))
+							values[i] = NULL;
+						else
+							values[i] = PQgetvalue(res, row, i);
+					}
+				}
+				else
+				{
+					values[0] = PQcmdStatus(res);
+				}
+
+				/* build the tuple and put it into the tuplestore. */
+				tuple = BuildTupleFromCStrings(attinmeta, values);
+				tuplestore_puttuple(tupstore, tuple);
+			}
+
+			/* give tuple descriptor to caller */
+			((ReturnSetInfo *) fcinfo->resultinfo)->setDesc = tupdesc;
+
+			/* clean up and return the tuplestore */
+			tuplestore_donestoring(tupstore);
+		}
+
+		PQclear(res);
+	}
+	PG_CATCH();
+	{
+		/* be sure to release the libpq result */
+		PQclear(res);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 /*
@@ -2273,6 +2247,57 @@ dblink_security_check(PGconn *conn, remoteConn *rconn)
 				   errhint("Target server's authentication method must be changed.")));
 		}
 	}
+}
+
+static void
+dblink_res_error(const char *conname, PGresult *res, const char *dblink_context_msg, bool fail)
+{
+	int			level;
+	char	   *pg_diag_sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+	char	   *pg_diag_message_primary = PQresultErrorField(res, PG_DIAG_MESSAGE_PRIMARY);
+	char	   *pg_diag_message_detail = PQresultErrorField(res, PG_DIAG_MESSAGE_DETAIL);
+	char	   *pg_diag_message_hint = PQresultErrorField(res, PG_DIAG_MESSAGE_HINT);
+	char	   *pg_diag_context = PQresultErrorField(res, PG_DIAG_CONTEXT);
+	int			sqlstate;
+	char	   *message_primary;
+	char	   *message_detail;
+	char	   *message_hint;
+	char	   *message_context;
+	const char *dblink_context_conname = "unnamed";
+
+	if (fail)
+		level = ERROR;
+	else
+		level = NOTICE;
+
+	if (pg_diag_sqlstate)
+		sqlstate = MAKE_SQLSTATE(pg_diag_sqlstate[0],
+								 pg_diag_sqlstate[1],
+								 pg_diag_sqlstate[2],
+								 pg_diag_sqlstate[3],
+								 pg_diag_sqlstate[4]);
+	else
+		sqlstate = ERRCODE_CONNECTION_FAILURE;
+
+	xpstrdup(message_primary, pg_diag_message_primary);
+	xpstrdup(message_detail, pg_diag_message_detail);
+	xpstrdup(message_hint, pg_diag_message_hint);
+	xpstrdup(message_context, pg_diag_context);
+
+	if (res)
+		PQclear(res);
+
+	if (conname)
+		dblink_context_conname = conname;
+
+	ereport(level,
+			(errcode(sqlstate),
+	message_primary ? errmsg("%s", message_primary) : errmsg("unknown error"),
+			 message_detail ? errdetail("%s", message_detail) : 0,
+			 message_hint ? errhint("%s", message_hint) : 0,
+			 message_context ? errcontext("%s", message_context) : 0,
+		  errcontext("Error occurred on dblink connection named \"%s\": %s.",
+					 dblink_context_conname, dblink_context_msg)));
 }
 
 /*

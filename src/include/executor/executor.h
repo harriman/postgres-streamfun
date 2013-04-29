@@ -163,16 +163,21 @@ extern Datum GetAttributeByNum(HeapTupleHeader tuple, AttrNumber attrno,
 				  bool *isNull);
 extern Datum GetAttributeByName(HeapTupleHeader tuple, const char *attname,
 				   bool *isNull);
-extern void init_fcache(Oid foid, FuncExprState *fcache,
-			MemoryContext fcacheCxt);
-extern Datum ExecMakeFunctionResult(FuncExprState *fcache,
-					   ExprContext *econtext,
-					   bool *isNull,
-					   ExprDoneCond *isDone);
-extern Tuplestorestate *ExecMakeTableFunctionResult(ExprState *funcexpr,
-							ExprContext *econtext,
-							TupleDesc expectedDesc,
-							TupleDesc *returnDesc);
+extern int	func_expr_errcontext(Expr *expr, bool showInternalNames);
+extern void get_expr_result_tupdesc(Expr *expr,
+						const char *scalarattnameornull,
+						TupleDesc *tupdesc_out,
+						bool *returnstuple_out);
+extern ExprState *ExecInitTableFunction(Expr *node,
+					  PlanState *parent,
+					  ExprContext *econtext,
+					  TupleDesc expectedDesc,
+					  bool returnsTuple);
+extern bool ExecMaterializeTableFunction(TupleTableSlot *slot,
+							 bool returnsTuple,
+							 Tuplestorestate **tuplestorestate_inout,
+							 ExprState *exprstate,
+							 ExprContext *econtext);
 extern Datum ExecEvalExprSwitchContext(ExprState *expression, ExprContext *econtext,
 						  bool *isNull, ExprDoneCond *isDone);
 extern ExprState *ExecInitExpr(Expr *node, PlanState *parent);
@@ -240,6 +245,7 @@ extern ExprContext *CreateExprContext(EState *estate);
 extern ExprContext *CreateStandaloneExprContext(void);
 extern void FreeExprContext(ExprContext *econtext);
 extern void ReScanExprContext(ExprContext *econtext);
+extern void ShutdownExprContext(ExprContext *econtext);
 
 #define ResetExprContext(econtext) \
 	MemoryContextReset((econtext)->ecxt_per_tuple_memory)

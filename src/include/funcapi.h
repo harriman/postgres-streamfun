@@ -20,6 +20,7 @@
 #include "access/tupdesc.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
+#include "utils/tuplestore.h"
 
 
 /*-------------------------------------------------------------------------
@@ -298,5 +299,10 @@ extern void end_MultiFuncCall(PG_FUNCTION_ARGS, FuncCallContext *funcctx);
 		rsi->isDone = ExprEndResult; \
 		PG_RETURN_NULL(); \
 	} while (0)
+
+
+/* from funcapi.c */
+extern Tuplestorestate *init_materialize_mode(FunctionCallInfo fcinfo,
+					  TupleDesc tupdesc);
 
 #endif   /* FUNCAPI_H */

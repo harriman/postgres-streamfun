@@ -39,6 +39,7 @@
 #include "executor/nodeTidscan.h"
 #include "executor/nodeUnique.h"
 #include "executor/nodeValuesscan.h"
+#include "utils/memutils.h"		/* MemoryContextReset */
 
 
 /*
@@ -108,7 +109,7 @@ ExecReScan(PlanState *node, ExprContext *exprCtxt)
 
 	/* Shut down any SRFs in the plan node's targetlist */
 	if (node->ps_ExprContext)
-		ReScanExprContext(node->ps_ExprContext);
+		ShutdownExprContext(node->ps_ExprContext);
 
 	/* And do node-type-specific processing */
 	switch (nodeTag(node))
@@ -210,6 +211,14 @@ ExecReScan(PlanState *node, ExprContext *exprCtxt)
 			break;
 	}
 
+	/* Free per-tuple memory allocated by targetlist expressions. */
+	if (node->ps_ExprContext)
+	{
+		ResetExprContext(node->ps_ExprContext);
+		if (node->ps_ExprContext->projection_tuple_memory)
+			MemoryContextReset(node->ps_ExprContext->projection_tuple_memory);
+	}
+
 	if (node->chgParam != NULL)
 	{
 		bms_free(node->chgParam);
@@ -237,10 +246,6 @@ ExecMarkPos(PlanState *node)
 
 		case T_TidScanState:
 			ExecTidMarkPos((TidScanState *) node);
-			break;
-
-		case T_FunctionScanState:
-			ExecFunctionMarkPos((FunctionScanState *) node);
 			break;
 
 		case T_ValuesScanState:
@@ -296,10 +301,6 @@ ExecRestrPos(PlanState *node)
 			ExecTidRestrPos((TidScanState *) node);
 			break;
 
-		case T_FunctionScanState:
-			ExecFunctionRestrPos((FunctionScanState *) node);
-			break;
-
 		case T_ValuesScanState:
 			ExecValuesRestrPos((ValuesScanState *) node);
 			break;
@@ -342,7 +343,6 @@ ExecSupportsMarkRestore(NodeTag plantype)
 		case T_SeqScan:
 		case T_IndexScan:
 		case T_TidScan:
-		case T_FunctionScan:
 		case T_ValuesScan:
 		case T_Material:
 		case T_Sort:

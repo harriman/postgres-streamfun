@@ -72,6 +72,104 @@ static void appendStringInfoText(StringInfo str, const text *t);
 
 
 /*****************************************************************************
+ *	 CONVERSION ROUTINES EXPORTED FOR USE BY C CODE							 *
+ *****************************************************************************/
+
+/*
+ * cstring_to_text
+ *
+ * Create a text value from a null-terminated C string.
+ *
+ * The new text value is freshly palloc'd with a full-size VARHDR.
+ */
+text *
+cstring_to_text(const char *s)
+{
+	return cstring_to_text_with_len(s, strlen(s));
+}
+
+/*
+ * cstring_to_text_with_len
+ *
+ * Same as cstring_to_text except the caller specifies the string length;
+ * the string need not be null_terminated.
+ */
+text *
+cstring_to_text_with_len(const char *s, int len)
+{
+	text	   *result = (text *) palloc(len + VARHDRSZ);
+
+	SET_VARSIZE(result, len + VARHDRSZ);
+	memcpy(VARDATA(result), s, len);
+
+	return result;
+}
+
+/*
+ * text_to_cstring
+ *
+ * Create a palloc'd, null-terminated C string from a text value.
+ *
+ * We support being passed a compressed or toasted text value.
+ * This is a bit bogus since such values shouldn't really be referred to as
+ * "text *", but it seems useful for robustness.  If we didn't handle that
+ * case here, we'd need another routine that did, anyway.
+ */
+char *
+text_to_cstring(const text *t)
+{
+	/* must cast away the const, unfortunately */
+	text	   *tunpacked = pg_detoast_datum_packed((struct varlena *) t);
+	int			len = VARSIZE_ANY_EXHDR(tunpacked);
+	char	   *result;
+
+	result = (char *) palloc(len + 1);
+	memcpy(result, VARDATA_ANY(tunpacked), len);
+	result[len] = '\0';
+
+	if (tunpacked != t)
+		pfree(tunpacked);
+
+	return result;
+}
+
+/*
+ * text_to_cstring_buffer
+ *
+ * Copy a text value into a caller-supplied buffer of size dst_len.
+ *
+ * The text string is truncated if necessary to fit.  The result is
+ * guaranteed null-terminated (unless dst_len == 0).
+ *
+ * We support being passed a compressed or toasted text value.
+ * This is a bit bogus since such values shouldn't really be referred to as
+ * "text *", but it seems useful for robustness.  If we didn't handle that
+ * case here, we'd need another routine that did, anyway.
+ */
+void
+text_to_cstring_buffer(const text *src, char *dst, size_t dst_len)
+{
+	/* must cast away the const, unfortunately */
+	text	   *srcunpacked = pg_detoast_datum_packed((struct varlena *) src);
+	size_t		src_len = VARSIZE_ANY_EXHDR(srcunpacked);
+
+	if (dst_len > 0)
+	{
+		dst_len--;
+		if (dst_len >= src_len)
+			dst_len = src_len;
+		else	/* ensure truncation is encoding-safe */
+			dst_len = pg_mbcliplen(VARDATA_ANY(srcunpacked), src_len, dst_len);
+		memcpy(dst, VARDATA_ANY(srcunpacked), dst_len);
+		dst[dst_len] = '\0';
+	}
+
+	if (srcunpacked != src)
+		pfree(srcunpacked);
+}
+
+
+/*****************************************************************************
  *	 USER I/O ROUTINES														 *
  *****************************************************************************/
 

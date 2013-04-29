@@ -307,9 +307,8 @@ FROM dblink('SELECT * FROM foo') AS t(a int, b text, c text[]);
 -- bad remote select
 SELECT *
 FROM dblink('SELECT * FROM foobar',false) AS t(a int, b text, c text[]);
-NOTICE:  sql error
-DETAIL:  ERROR:  relation "foobar" does not exist
-
+NOTICE:  relation "foobar" does not exist
+CONTEXT:  Error occurred on dblink connection named "unnamed": could not execute query.
  a | b | c 
 ---+---+---
 (0 rows)
@@ -394,9 +393,8 @@ WHERE t.a > 7;
 SELECT *
 FROM dblink('myconn','SELECT * FROM foobar',false) AS t(a int, b text, c text[])
 WHERE t.a > 7;
-NOTICE:  sql error
-DETAIL:  ERROR:  relation "foobar" does not exist
-
+NOTICE:  relation "foobar" does not exist
+CONTEXT:  Error occurred on dblink connection named "unnamed": could not execute query.
  a | b | c 
 ---+---+---
 (0 rows)

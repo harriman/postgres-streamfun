@@ -18,6 +18,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
+#include "miscadmin.h"			/* work_mem */
 #include "parser/parse_coerce.h"
 #include "parser/parse_expr.h"
 #include "utils/array.h"
@@ -50,22 +51,36 @@ FuncCallContext *
 init_MultiFuncCall(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *retval;
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	/*
 	 * Bail if we're called in the wrong context
 	 */
-	if (fcinfo->resultinfo == NULL || !IsA(fcinfo->resultinfo, ReturnSetInfo))
+	if (!fcinfo->flinfo->fn_retset)
+		ereport(ERROR,
+				(errcode(ERRCODE_E_R_I_E_SRF_PROTOCOL_VIOLATED),
+				 errmsg("Function attempts to return a set but was defined "
+						"without RETURNS SETOF."),
+				 errhint("The function uses a C language interface for "
+						 "set-returning functions (SRF_MULTICALL_INIT or "
+						 "init_MultiFuncCall). Its return type given by "
+						 "CREATE FUNCTION must specify SETOF or TABLE."),
+				 fmgr_call_errcontext(fcinfo, true)));
+
+	if (rsi == NULL ||
+		!IsA(rsi, ReturnSetInfo) ||
+		!(rsi->allowedModes & (SFRM_Materialize | SFRM_ValuePerCall)))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
+				 errmsg("set-valued function called in context that cannot accept a set"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	if (fcinfo->flinfo->fn_extra == NULL)
 	{
 		/*
 		 * First call
 		 */
-		ReturnSetInfo  *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-		MemoryContext	multi_call_ctx;
+		MemoryContext multi_call_ctx;
 
 		/*
 		 * Create a suitably long-lived context to hold cross-call data
@@ -187,13 +202,83 @@ shutdown_MultiFuncCall(Datum arg)
 
 
 /*
+ * init_materialize_mode
+ *
+ * A set-returning function can call this routine to get ready to return a
+ * set of result tuples via the "materialize mode" protocol.
+ */
+Tuplestorestate *
+init_materialize_mode(FunctionCallInfo fcinfo, TupleDesc tupdesc)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+    /* Fail if called by a non-set-returning function. */
+    if (!fcinfo->flinfo->fn_retset)
+		ereport(ERROR,
+				(errcode(ERRCODE_E_R_I_E_SRF_PROTOCOL_VIOLATED),
+				 errmsg("Function attempts to return a set but was defined "
+						"without RETURNS SETOF."),
+				 errhint("The function uses a C language interface for "
+						 "set-returning functions (init_materialize_mode). "
+						 "Its return type given by CREATE FUNCTION must "
+                         "specify SETOF or TABLE."),
+				 fmgr_call_errcontext(fcinfo, true)));
+
+	/* Fail if function's caller doesn't want the function to return a set. */
+	if (rsinfo == NULL ||
+		!IsA(rsinfo, ReturnSetInfo) ||
+		!(rsinfo->allowedModes & (SFRM_ValuePerCall | SFRM_Materialize)))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set"),
+				 fmgr_call_errcontext(fcinfo, false)));
+	}
+
+	/*
+	 * Create tuplestore, unless the function's caller has provided one.
+	 *
+	 * When a set-returning function has a set-valued argument, a tuplestore
+	 * created by the function on the first iteration could be passed in again
+	 * to gather additional results on subsequent iterations.  The function is
+	 * expected to append its new results (if any) to the existing contents.
+	 */
+	if (!rsinfo->setResult)
+	{
+		MemoryContext oldcontext;
+
+		/* Switch to per-query memory context. */
+		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
+
+		/* Create the tuplestore. */
+		rsinfo->setResult = tuplestore_begin_heap(true, false, work_mem);
+
+		/* Switch back to caller's memory context. */
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* Tell function's caller to obtain the result from the tuplestore. */
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->isDone = ExprSingleResult;
+
+	/* Give tuple descriptor (or NULL) to the function's caller. */
+	rsinfo->setDesc = tupdesc;
+
+	/* Return the tuplestore. */
+	return rsinfo->setResult;
+}
+
+
+/*
  * get_call_result_type
  *		Given a function's call info record, determine the kind of datatype
  *		it is supposed to return.  If resultTypeId isn't NULL, *resultTypeId
  *		receives the actual datatype OID (this is mainly useful for scalar
  *		result types).	If resultTupleDesc isn't NULL, *resultTupleDesc
  *		receives a pointer to a TupleDesc when the result is of a composite
- *		type, or NULL when it's a scalar result.
+ *		type, or NULL when it's a scalar result.  The TupleDesc is newly
+ *		palloc'ed in the current memory context; the caller may pfree it
+ *		when no longer needed.
  *
  * One hard case that this handles is resolution of actual rowtypes for
  * functions returning RECORD (from either the function's OUT parameter
@@ -340,6 +425,12 @@ internal_get_result_type(Oid funcid,
 
 		ReleaseSysCache(tp);
 
+		/* tupdesc is unshared and newly palloc'ed in caller's context */
+		Assert(resultTupleDesc == NULL ||
+			   *resultTupleDesc == NULL ||
+			   ((*resultTupleDesc)->tdrefcount == -1 &&
+		   GetMemoryChunkContext(*resultTupleDesc) == CurrentMemoryContext));
+
 		return result;
 	}
 
@@ -382,7 +473,7 @@ internal_get_result_type(Oid funcid,
 			{
 				result = TYPEFUNC_COMPOSITE;
 				if (resultTupleDesc)
-					*resultTupleDesc = rsinfo->expectedDesc;
+					*resultTupleDesc = CreateTupleDescCopyConstr(rsinfo->expectedDesc);
 				/* Assume no polymorphic columns here, either */
 			}
 			break;
@@ -391,6 +482,12 @@ internal_get_result_type(Oid funcid,
 	}
 
 	ReleaseSysCache(tp);
+
+	/* tupdesc is unshared and newly palloc'ed in caller's context */
+	Assert(!resultTupleDesc ||
+		   !*resultTupleDesc ||
+		   ((*resultTupleDesc)->tdrefcount == -1 &&
+			GetMemoryChunkContext(*resultTupleDesc) == CurrentMemoryContext));
 
 	return result;
 }
