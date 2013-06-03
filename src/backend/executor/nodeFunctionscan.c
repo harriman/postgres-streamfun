@@ -24,78 +24,174 @@
 
 #include "executor/nodeFunctionscan.h"
 #include "funcapi.h"
-#include "utils/builtins.h"
+#include "utils/memutils.h"		/* MemoryContextReset */
 
-
-static TupleTableSlot *FunctionNext(FunctionScanState *node);
 
 /* ----------------------------------------------------------------
  *						Scan Support
  * ----------------------------------------------------------------
  */
 /* ----------------------------------------------------------------
+ *		FunctionMaterial
  *		FunctionNext
  *
  *		This is a workhorse for ExecFunctionScan
  * ----------------------------------------------------------------
  */
 static TupleTableSlot *
-FunctionNext(FunctionScanState *node)
+FunctionMaterial(ScanState *node)
 {
-	TupleTableSlot *slot;
-	EState	   *estate;
-	ScanDirection direction;
-	Tuplestorestate *tuplestorestate;
+	FunctionScanState	*scanstate = (FunctionScanState *) node;
+	TupleTableSlot		*slot = scanstate->ss.ss_ScanTupleSlot;
+	bool forward = ScanDirectionIsForward(scanstate->ss.ps.state->es_direction);
+
+	ExecClearTuple(slot);
 
 	/*
-	 * get information from the estate and scan state
+	 * Try to fetch a tuple from tuplestore.
 	 */
-	estate = node->ss.ps.state;
-	direction = estate->es_direction;
-
-	tuplestorestate = node->tuplestorestate;
-
-	/*
-	 * If first time through, read all tuples from function and put them in a
-	 * tuplestore. Subsequent calls just fetch tuples from tuplestore.
-	 */
-	if (tuplestorestate == NULL)
+	if (scanstate->tuplestorestate)
 	{
-		node->tuplestorestate = tuplestorestate =
-			ExecMakeTableFunctionResult(node->funcexpr,
-										node->ss.ps.ps_ExprContext,
-										node->tupdesc,
-										node->eflags & EXEC_FLAG_BACKWARD);
+		Tuplestorestate	*tuplestorestate = scanstate->tuplestorestate;
+		bool			eof_tuplestore = tuplestore_ateof(tuplestorestate);
+
+		/*
+		 * If we are not at the end of the tuplestore, or are going backwards,
+		 * try to fetch a tuple from tuplestore.
+		 */
+		if (!forward && eof_tuplestore)
+		{
+			if (!scanstate->eof_underlying)
+			{
+				/*
+				 * When reversing direction at tuplestore EOF, the first
+				 * gettupleslot call will fetch the last-added tuple; but we
+				 * want to return the one before that, if possible. So do an
+				 * extra fetch.
+				 */
+				if (!tuplestore_advance(tuplestorestate, forward))
+					return slot;	/* the tuplestore must be empty */
+			}
+			eof_tuplestore = false;
+		}
+
+		/* Return next tuple (in the current scan direction) from tuplestore. */
+		if (!eof_tuplestore)
+		{
+			if (tuplestore_gettupleslot(tuplestorestate, forward, false, slot))
+				return slot;
+
+			/*
+			 * Hit beginning of tuplestore reading backwards. Return empty
+			 * slot.
+			 */
+			if (!forward)
+				return slot;
+		}
 	}
 
 	/*
-	 * Get the next tuple from tuplestore. Return NULL if no more tuples.
+	 * Get next tuple from function.  Also gets a tuplestore if we don't
+	 * already have one.
 	 */
-	slot = node->ss.ss_ScanTupleSlot;
-	(void) tuplestore_gettupleslot(tuplestorestate,
-								   ScanDirectionIsForward(direction),
-								   false,
-								   slot);
+	if (!scanstate->eof_underlying)
+	{
+		ExprContext		*econtext = scanstate->funcexprcontext;
+		MemoryContext	oldcontext;
+
+		/* Switch to short-lived context for calling the function. */
+		oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+		if (!ExecMaterializeTableFunction(scanstate, econtext, slot))
+			scanstate->eof_underlying = true;
+
+		/* Switch back to caller's context. */
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	Assert(scanstate->eof_underlying == slot->tts_isempty);
+	return slot;
+}
+
+/*
+ * FunctionNext -- Forward scan, once only
+ */
+static TupleTableSlot *
+FunctionNext(ScanState *node)
+{
+	FunctionScanState	*scanstate = (FunctionScanState *) node;
+	TupleTableSlot		*slot = scanstate->ss.ss_ScanTupleSlot;
+	ExprContext			*econtext = scanstate->funcexprcontext;
+	MemoryContext		oldcontext;
+	Datum				result;
+	ExprDoneCond		isDone;
+	bool				isNull;
+
+	Assert(ScanDirectionIsForward(scanstate->ss.ps.state->es_direction));
+
+	/* Clear out any previous result. */
+	ExecClearTuple(slot);
+
+	/* Reset the per-tuple memory context. */
+	ResetExprContext(econtext);
+
+	/* Return empty slot if no more data. */
+	if (scanstate->eof_underlying)
+		return slot;
+
+	/* Switch to short-lived context for calling the function or expression. */
+	oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+
+	/* Get function's next result value. */
+	result = ExecEvalExpr(scanstate->funcexpr, econtext, &isNull, &isDone);
+
+	/* If result is a singleton, or no more data, we'll return EOD next time. */
+	if (isDone != ExprMultipleResult)
+		scanstate->eof_underlying = true;
+
+	if (isDone != ExprEndResult)
+	{
+		/* 
+		 * If result is of composite or RECORD type, fail if the actual tuple 
+		 * format is incompatible with the output slot's expected tupdesc.
+		 * Skip if expr is a function, because ExecEvalFunc or ExecEvalSRF 
+		 * checked this already.
+		 */
+		if (!isNull &&
+			scanstate->returnsTuple &&
+			!IsA(scanstate->funcexpr, FuncExprState))
+			ExecVerifyReturnedRowType((Expr *) scanstate->funcexpr, 
+									  result,
+									  slot->tts_tupleDescriptor, 
+									  &scanstate->returnedTypeId,
+									  &scanstate->returnedTypMod);
+
+		/* Store result in slot. */
+		ExecStoreSlotTupleDatum(slot, result, isNull, scanstate->returnsTuple);
+	}
+
+	/* Restore caller's context. */
+	MemoryContextSwitchTo(oldcontext);
+
 	return slot;
 }
 
 /* ----------------------------------------------------------------
- *		ExecFunctionScan(node)
+ *		ExecFunctionScan(scanstate)
  *
  *		Scans the function sequentially and returns the next qualifying
  *		tuple.
- *		It calls the ExecScan() routine and passes it the access method
- *		which retrieves tuples sequentially.
- *
+ *		We call the ExecScan() routine and pass it the appropriate
+ *		access method functions.
+ * ----------------------------------------------------------------
  */
-
 TupleTableSlot *
-ExecFunctionScan(FunctionScanState *node)
+ExecFunctionScan(FunctionScanState *scanstate)
 {
-	/*
-	 * use FunctionNext as access method
-	 */
-	return ExecScan(&node->ss, (ExecScanAccessMtd) FunctionNext);
+	if (scanstate->materialize)
+		return ExecScan(&scanstate->ss, FunctionMaterial);
+	else
+		return ExecScan(&scanstate->ss, FunctionNext);
 }
 
 /* ----------------------------------------------------------------
@@ -106,9 +202,8 @@ FunctionScanState *
 ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 {
 	FunctionScanState *scanstate;
-	Oid			funcrettype;
-	TypeFuncClass functypclass;
-	TupleDesc	tupdesc = NULL;
+	TupleDesc	tupdesc;
+	const char *scalarattname;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & EXEC_FLAG_MARK));
@@ -125,14 +220,17 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 	scanstate = makeNode(FunctionScanState);
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
-	scanstate->eflags = eflags;
 
 	/*
-	 * Miscellaneous initialization
-	 *
-	 * create expression context for node
+	 * Create two expression contexts: one for evaluating the projection and
+	 * quals, and another for the function expression.	We separate them so
+	 * each can have its own list of ExprContext callback functions.  In case
+	 * the projection contains more than one set-valued expression, and one
+	 * refuses to restart, then ExecTargetList can call ShutdownExprContext to
+	 * reset the others... we don't want this to affect our table function.
 	 */
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
+	scanstate->funcexprcontext = CreateExprContext(estate);
 
 #define FUNCTIONSCAN_NSLOTS 2
 
@@ -153,63 +251,60 @@ ExecInitFunctionScan(FunctionScan *node, EState *estate, int eflags)
 					 (PlanState *) scanstate);
 
 	/*
-	 * Now determine if the function returns a simple or composite type, and
-	 * build an appropriate tupdesc.
+	 * Build tuple descriptor for the expected result of the expression. Find
+	 * out whether the result will be a scalar or composite type.
 	 */
-	functypclass = get_expr_result_type(node->funcexpr,
-										&funcrettype,
-										&tupdesc);
+	scalarattname = NULL;
+	if (node->funccolnames)
+		scalarattname = strVal(linitial(node->funccolnames));
 
-	if (functypclass == TYPEFUNC_COMPOSITE)
-	{
-		/* Composite data type, e.g. a table's row type */
-		Assert(tupdesc);
-		/* Must copy it out of typcache for safety */
-		tupdesc = CreateTupleDescCopy(tupdesc);
-	}
-	else if (functypclass == TYPEFUNC_SCALAR)
-	{
-		/* Base data type, i.e. scalar */
-		char	   *attname = strVal(linitial(node->funccolnames));
+	get_expr_result_tupdesc((Expr *) node->funcexpr,
+							scalarattname,
+							&tupdesc,
+							&scanstate->returnsTuple);
 
-		tupdesc = CreateTemplateTupleDesc(1, false);
-		TupleDescInitEntry(tupdesc,
-						   (AttrNumber) 1,
-						   attname,
-						   funcrettype,
-						   -1,
-						   0);
-	}
-	else if (functypclass == TYPEFUNC_RECORD)
+	/*
+	 * If type is RECORD, build tupdesc from the column names and types given
+	 * explicitly in the query:  FROM f(args) AS alias(colname, coltype, ...).
+	 *
+	 * If the resultcol lists are empty, we build a 0-column tuple descriptor,
+	 * and the function must return columnless tuples.
+	 */
+	if (scanstate->returnsTuple && !tupdesc)
 	{
 		tupdesc = BuildDescFromLists(node->funccolnames,
 									 node->funccoltypes,
 									 node->funccoltypmods);
+		BlessTupleDesc(tupdesc);
 	}
-	else
+	else if (!tupdesc)
 	{
 		/* crummy error message, but parser should have caught this */
 		elog(ERROR, "function in FROM has unsupported return type");
 	}
 
-	/*
-	 * For RECORD results, make sure a typmod has been assigned.  (The
-	 * function should do this for itself, but let's cover things in case it
-	 * doesn't.)
-	 */
-	BlessTupleDesc(tupdesc);
-
-	scanstate->tupdesc = tupdesc;
 	ExecAssignScanType(&scanstate->ss, tupdesc);
 
-	/*
-	 * Other node-specific setup
-	 */
-	scanstate->tuplestorestate = NULL;
-	scanstate->funcexpr = ExecInitExpr((Expr *) node->funcexpr,
-									   (PlanState *) scanstate);
+	/* No actual result row type has been validated yet. */
+	scanstate->returnedTypeId = InvalidOid;
+	scanstate->returnedTypMod = 0;
 
-	scanstate->ss.ps.ps_TupFromTlist = false;
+	/* Should we save the function results in a tuplestore? */
+	scanstate->tuplestorestate = NULL;
+	if (eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_REWIND))
+	{
+		scanstate->materialize = true;
+		if (eflags & EXEC_FLAG_BACKWARD)
+			scanstate->randomAccess = true;
+	}
+
+	/* Initialize the function expression. */
+	scanstate->funcexpr = ExecInitTableFunction((Expr *) node->funcexpr,
+												(PlanState *) scanstate,
+												scanstate->funcexprcontext,
+												tupdesc,
+												scanstate->returnsTuple,
+												scanstate->randomAccess);
 
 	/*
 	 * Initialize result tuple type and projection info.
@@ -235,25 +330,19 @@ ExecCountSlotsFunctionScan(FunctionScan *node)
  * ----------------------------------------------------------------
  */
 void
-ExecEndFunctionScan(FunctionScanState *node)
+ExecEndFunctionScan(FunctionScanState *scanstate)
 {
-	/*
-	 * Free the exprcontext
-	 */
-	ExecFreeExprContext(&node->ss.ps);
+	ExecFreeExprContext(&scanstate->ss.ps);
 
 	/*
 	 * clean out the tuple table
 	 */
-	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
-	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+	ExecClearTuple(scanstate->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(scanstate->ss.ss_ScanTupleSlot);
 
-	/*
-	 * Release tuplestore resources
-	 */
-	if (node->tuplestorestate != NULL)
-		tuplestore_end(node->tuplestorestate);
-	node->tuplestorestate = NULL;
+	/* Free the tuplestore. */
+	if (scanstate->tuplestorestate)
+		tuplestore_end(scanstate->tuplestorestate);
 }
 
 /* ----------------------------------------------------------------
@@ -263,16 +352,12 @@ ExecEndFunctionScan(FunctionScanState *node)
  * ----------------------------------------------------------------
  */
 void
-ExecFunctionReScan(FunctionScanState *node, ExprContext *exprCtxt)
+ExecFunctionReScan(FunctionScanState *scanstate, ExprContext *econtext)
 {
-	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
-	node->ss.ps.ps_TupFromTlist = false;
+	ExecClearTuple(scanstate->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(scanstate->ss.ss_ScanTupleSlot);
 
-	/*
-	 * If we haven't materialized yet, just return.
-	 */
-	if (!node->tuplestorestate)
-		return;
+	scanstate->ss.ps.ps_TupFromTlist = false;
 
 	/*
 	 * Here we have a choice whether to drop the tuplestore (and recompute the
@@ -280,11 +365,41 @@ ExecFunctionReScan(FunctionScanState *node, ExprContext *exprCtxt)
 	 * expression contains parameters, else we rescan.	XXX maybe we should
 	 * recompute if the function is volatile?
 	 */
-	if (node->ss.ps.chgParam != NULL)
+	if (scanstate->ss.ps.chgParam != NULL)
 	{
-		tuplestore_end(node->tuplestorestate);
-		node->tuplestorestate = NULL;
+		/* Discard any materialized results. */
+		if (scanstate->tuplestorestate)
+			tuplestore_clear(scanstate->tuplestorestate);
+
+		/* 
+		 * Reset any set-returning subexpressions that were expecting to be
+		 * called again in ExprMultipleResult protocol.  They must start fresh 
+		 * with new arguments the next time we call.
+		 */
+		ReScanExprContext(scanstate->funcexprcontext);
+		scanstate->eof_underlying = false;
 	}
+
+	/* 
+	 * Rescan materialized results.  Don't disturb the expr.  At the end of 
+	 * the tuplestore, if the expr hasn't yet returned all of its result 
+	 * tuples, we'll pick up where we left off, and resume calling the expr 
+	 * for further results.
+	 */
+	else if (scanstate->materialize)
+	{
+		if (scanstate->tuplestorestate)
+			tuplestore_rescan(scanstate->tuplestorestate);
+	}
+
+ 	/* 
+ 	 * Results are being passed through directly, not saved in tuplestore.
+ 	 * We'll re-evaluate expr so it will produce its (same?) results again.
+ 	 */
 	else
-		tuplestore_rescan(node->tuplestorestate);
+	{
+		/* Reset any incomplete set-returning subexpressions. */
+		ReScanExprContext(scanstate->funcexprcontext);
+		scanstate->eof_underlying = false;
+	}
 }

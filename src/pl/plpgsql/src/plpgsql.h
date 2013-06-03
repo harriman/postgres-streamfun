@@ -702,13 +702,11 @@ typedef struct
 	bool		readonly_func;
 
 	TupleDesc	rettupdesc;
+	TupleDesc	expected_tupdesc;
 	char	   *exitlabel;		/* the "target" label of the current EXIT or
 								 * CONTINUE stmt, if any */
 
 	Tuplestorestate *tuple_store;		/* SRFs accumulate results here */
-	MemoryContext tuple_store_cxt;
-	ResourceOwner tuple_store_owner;
-	ReturnSetInfo *rsi;
 
 	int			trig_nargs;
 	Datum	   *trig_argv;

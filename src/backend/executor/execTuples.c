@@ -609,6 +609,75 @@ ExecStoreAllNullTuple(TupleTableSlot *slot)
 }
 
 /* --------------------------------
+ *		ExecStoreSlotTupleDatum
+ *
+ *		Fills a slot with a tuple containing a scalar or composite value.
+ *
+ *		slot:	 slot to store into
+ *		datum:	 Datum to store
+ *		isNull:  true to store NULL
+ *		isTuple: true to store a composite value as a tuple of zero or more
+ *				 columns; false to store a scalar or composite value as a
+ *				 single column.
+ *
+ * If isTuple is false, the scalar or composite datum and the isNull flag are
+ * stored into a one-column virtual tuple.	The caller must ensure that the
+ * slot's tuple descriptor specifies a single column of a type which is binary
+ * compatible with the given datum.  Values of pass-by-reference types are not
+ * copied nor freed; the caller must ensure that their memory remains valid
+ * as long as needed.
+ *
+ * If isTuple is true, then the datum must be composite (a physical tuple),
+ * and its columns are assigned one-to-one to the columns of the slot's tuple.
+ * The caller must ensure that the slot's tuple descriptor specifies the same
+ * number of columns as the source tuple, and that the tuple formats are binary
+ * compatible.	If isNull is false, the tuple is copied into the current memory
+ * context; the copy will be freed when the slot is cleared.  If isNull is
+ * true, the datum is ignored and an all-null tuple is stored in the slot.
+ * --------------------------------
+ */
+void
+ExecStoreSlotTupleDatum(TupleTableSlot *slot, Datum datum, bool isNull, bool isTuple)
+{
+	Assert(slot != NULL && slot->tts_tupleDescriptor != NULL);
+
+	/* Store scalar value in slot. */
+	if (!isTuple)
+	{
+		Assert(slot->tts_tupleDescriptor->natts == 1);
+		if (!slot->tts_isempty)
+			ExecClearTuple(slot);
+		slot->tts_values[0] = datum;
+		slot->tts_isnull[0] = isNull;
+		ExecStoreVirtualTuple(slot);
+	}
+
+	/* Store null tuple in slot (i.e. a tuple with every column null). */
+	else if (isNull)
+		ExecStoreAllNullTuple(slot);
+
+	/* Store composite value in slot. */
+	else
+	{
+	    HeapTuple	    newTuple;
+		HeapTupleHeader tuphdr = DatumGetHeapTupleHeader(datum);
+		HeapTupleData   tmptup;
+
+		/* Build temporary HeapTuple. */
+		tmptup.t_data = tuphdr;
+		tmptup.t_len = HeapTupleHeaderGetDatumLength(tuphdr);
+		ItemPointerSetInvalid(&(tmptup.t_self));
+		tmptup.t_tableOid = InvalidOid;
+
+		/* Copy tuple to current memory context. */
+        newTuple = heap_copytuple(&tmptup);
+
+        /* Store tuple in slot. */
+		ExecStoreTuple(newTuple, slot, InvalidBuffer, true);
+	}
+}
+
+/* --------------------------------
  *		ExecCopySlotTuple
  *			Obtain a copy of a slot's regular physical tuple.  The copy is
  *			palloc'd in the current memory context.

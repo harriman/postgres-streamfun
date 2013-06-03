@@ -26,6 +26,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
+#include "funcapi.h"					/* srf_init_materialize_mode */
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -662,11 +663,8 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 Datum
 pg_stat_statements(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	Oid			userid = GetUserId();
 	bool		is_superuser = superuser();
 	HASH_SEQ_STATUS hash_seq;
@@ -676,20 +674,6 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
-
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
-
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
 	tupdesc = CreateTemplateTupleDesc(PG_STAT_STATEMENTS_COLS, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "userid",
@@ -705,12 +689,9 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "rows",
 					   INT8OID, -1, 0);
 
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
+	srf_set_tupdesc(fcinfo, tupdesc);
 
 	LWLockAcquire(pgss->lock, LW_SHARED);
 
@@ -763,9 +744,6 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	}
 
 	LWLockRelease(pgss->lock);
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
 }

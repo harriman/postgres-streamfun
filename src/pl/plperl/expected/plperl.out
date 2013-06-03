@@ -185,7 +185,8 @@ CREATE OR REPLACE FUNCTION perl_record_set() RETURNS SETOF record AS $$
     return undef;
 $$  LANGUAGE plperl;
 SELECT perl_record_set();
-ERROR:  set-valued function called in context that cannot accept a set
+ERROR:  function returning record called in context that cannot accept type record
+CONTEXT:  function perl_record_set()
 SELECT * FROM perl_record_set();
 ERROR:  a column definition list is required for functions returning "record"
 LINE 1: SELECT * FROM perl_record_set();
@@ -203,7 +204,8 @@ CREATE OR REPLACE FUNCTION perl_record_set() RETURNS SETOF record AS $$
     ];
 $$  LANGUAGE plperl;
 SELECT perl_record_set();
-ERROR:  set-valued function called in context that cannot accept a set
+ERROR:  function returning record called in context that cannot accept type record
+CONTEXT:  function perl_record_set()
 SELECT * FROM perl_record_set();
 ERROR:  a column definition list is required for functions returning "record"
 LINE 1: SELECT * FROM perl_record_set();
@@ -218,7 +220,8 @@ CREATE OR REPLACE FUNCTION perl_record_set() RETURNS SETOF record AS $$
     ];
 $$  LANGUAGE plperl;
 SELECT perl_record_set();
-ERROR:  set-valued function called in context that cannot accept a set
+ERROR:  function returning record called in context that cannot accept type record
+CONTEXT:  function perl_record_set()
 SELECT * FROM perl_record_set();
 ERROR:  a column definition list is required for functions returning "record"
 LINE 1: SELECT * FROM perl_record_set();

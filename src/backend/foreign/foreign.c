@@ -26,7 +26,6 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
-#include "utils/memutils.h"
 #include "utils/syscache.h"
 
 
@@ -264,62 +263,25 @@ GetUserMapping(Oid userid, Oid serverid)
  * tuplestore usable in SRF.
  */
 static void
-deflist_to_tuplestore(ReturnSetInfo *rsinfo, List *options)
+deflist_to_tuplestore(FunctionCallInfo fcinfo, List *options)
 {
 	ListCell   *cell;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
 	Datum		values[2];
-	bool		nulls[2];
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
+	bool		nulls[2] = {0};
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
-
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/*
-	 * Now prepare the result set.
-	 */
-	tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
+	tupstore = srf_init_materialize_mode(fcinfo);
+	tupdesc = ((ReturnSetInfo *) fcinfo->resultinfo)->expectedDesc;
 
 	foreach(cell, options)
 	{
 		DefElem    *def = lfirst(cell);
 
 		values[0] = CStringGetTextDatum(def->defname);
-		nulls[0] = false;
-		if (def->arg)
-		{
-			values[1] = CStringGetTextDatum(((Value *) (def->arg))->val.str);
-			nulls[1] = false;
-		}
-		else
-		{
-			values[1] = (Datum) 0;
-			nulls[1] = true;
-		}
+		values[1] = CStringGetTextDatum(((Value *) def->arg)->val.str);
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
-	MemoryContextSwitchTo(oldcontext);
 }
 
 
@@ -332,7 +294,7 @@ pg_options_to_table(PG_FUNCTION_ARGS)
 {
 	Datum		array = PG_GETARG_DATUM(0);
 
-	deflist_to_tuplestore((ReturnSetInfo *) fcinfo->resultinfo, untransformRelOptions(array));
+	deflist_to_tuplestore(fcinfo, untransformRelOptions(array));
 
 	return (Datum) 0;
 }

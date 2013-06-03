@@ -1402,7 +1402,6 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 	plperl_proc_desc *prodesc;
 	SV		   *perlret;
 	Datum		retval;
-	ReturnSetInfo *rsi;
 	SV		   *array_ret = NULL;
 
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -1412,18 +1411,11 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 	current_call_data->prodesc = prodesc;
 	increment_prodesc_refcount(prodesc);
 
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
+	/* If set-returning function, results will be returned in a tuplestore. */
 	if (prodesc->fn_retisset)
 	{
-		/* Check context before allowing the call to go through */
-		if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-			(rsi->allowedModes & SFRM_Materialize) == 0 ||
-			rsi->expectedDesc == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("set-valued function called in context that "
-							"cannot accept a set")));
+		current_call_data->tuple_store = srf_init_materialize_mode(fcinfo);
+		current_call_data->ret_tdesc = srf_get_expected_tupdesc(fcinfo, true);
 	}
 
 	activate_interpreter(prodesc->interp);
@@ -1469,19 +1461,12 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 							"reference to array or use return_next")));
 		}
 
-		rsi->returnMode = SFRM_Materialize;
-		if (current_call_data->tuple_store)
-		{
-			rsi->setResult = current_call_data->tuple_store;
-			rsi->setDesc = current_call_data->ret_tdesc;
-		}
+		/* We have already set up the output tuplestore for caller. */
 		retval = (Datum) 0;
 	}
 	else if (!SvOK(perlret))
 	{
 		/* Return NULL if Perl code returned undef */
-		if (rsi && IsA(rsi, ReturnSetInfo))
-			rsi->isDone = ExprEndResult;
 		retval = InputFunctionCall(&prodesc->result_in_func, NULL,
 								   prodesc->result_typioparam, -1);
 		fcinfo->isnull = true;
@@ -1503,7 +1488,9 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 		}
 
 		/* XXX should cache the attinmeta data instead of recomputing */
-		if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
+		td = srf_get_expected_tupdesc(fcinfo, false);
+		if (!td &&
+			get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -2094,7 +2081,6 @@ plperl_return_next(SV *sv)
 {
 	plperl_proc_desc *prodesc;
 	FunctionCallInfo fcinfo;
-	ReturnSetInfo *rsi;
 	MemoryContext old_cxt;
 
 	if (!sv)
@@ -2102,7 +2088,6 @@ plperl_return_next(SV *sv)
 
 	prodesc = current_call_data->prodesc;
 	fcinfo = current_call_data->fcinfo;
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	if (!prodesc->fn_retisset)
 		ereport(ERROR,
@@ -2116,40 +2101,8 @@ plperl_return_next(SV *sv)
 				 errmsg("SETOF-composite-returning PL/Perl function "
 						"must call return_next with reference to hash")));
 
-	if (!current_call_data->ret_tdesc)
-	{
-		TupleDesc	tupdesc;
-
-		Assert(!current_call_data->tuple_store);
-		Assert(!current_call_data->attinmeta);
-
-		/*
-		 * This is the first call to return_next in the current PL/Perl
-		 * function call, so memoize some lookups
-		 */
-		if (prodesc->fn_retistuple)
-			(void) get_call_result_type(fcinfo, NULL, &tupdesc);
-		else
-			tupdesc = rsi->expectedDesc;
-
-		/*
-		 * Make sure the tuple_store and ret_tdesc are sufficiently
-		 * long-lived.
-		 */
-		old_cxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-
-		current_call_data->ret_tdesc = CreateTupleDescCopy(tupdesc);
-		current_call_data->tuple_store =
-			tuplestore_begin_heap(rsi->allowedModes & SFRM_Materialize_Random,
-								  false, work_mem);
-		if (prodesc->fn_retistuple)
-		{
-			current_call_data->attinmeta =
-				TupleDescGetAttInMetadata(current_call_data->ret_tdesc);
-		}
-
-		MemoryContextSwitchTo(old_cxt);
-	}
+	Assert(current_call_data->tuple_store);
+	Assert(current_call_data->ret_tdesc);
 
 	/*
 	 * Producing the tuple we want to return requires making plenty of
@@ -2159,6 +2112,8 @@ plperl_return_next(SV *sv)
 	 */
 	if (!current_call_data->tmp_cxt)
 	{
+		ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
 		current_call_data->tmp_cxt =
 			AllocSetContextCreate(rsi->econtext->ecxt_per_tuple_memory,
 								  "PL/Perl return_next temporary cxt",
@@ -2167,20 +2122,28 @@ plperl_return_next(SV *sv)
 								  ALLOCSET_DEFAULT_MAXSIZE);
 	}
 
-	old_cxt = MemoryContextSwitchTo(current_call_data->tmp_cxt);
-
 	if (prodesc->fn_retistuple)
 	{
 		HeapTuple	tuple;
 
+		if (!current_call_data->attinmeta)
+		{
+			current_call_data->attinmeta =
+				TupleDescGetAttInMetadata(current_call_data->ret_tdesc);
+		}
+
+		old_cxt = MemoryContextSwitchTo(current_call_data->tmp_cxt);
 		tuple = plperl_build_tuple_result((HV *) SvRV(sv),
 										  current_call_data->attinmeta);
 		tuplestore_puttuple(current_call_data->tuple_store, tuple);
+		MemoryContextSwitchTo(old_cxt);
 	}
 	else
 	{
 		Datum		ret;
 		bool		isNull;
+
+		old_cxt = MemoryContextSwitchTo(current_call_data->tmp_cxt);
 
 		if (SvOK(sv))
 		{
@@ -2208,9 +2171,9 @@ plperl_return_next(SV *sv)
 		tuplestore_putvalues(current_call_data->tuple_store,
 							 current_call_data->ret_tdesc,
 							 &ret, &isNull);
+		MemoryContextSwitchTo(old_cxt);
 	}
 
-	MemoryContextSwitchTo(old_cxt);
 	MemoryContextReset(current_call_data->tmp_cxt);
 }
 

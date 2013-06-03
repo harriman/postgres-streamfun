@@ -1577,6 +1577,70 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 	return (HeapTuple) DatumGetPointer(result);
 }
 
+/*
+ * trigger_call_errcontext
+ *
+ * When calling ereport from a trigger function, this can be used to add some
+ * information to the error message to identify the trigger event.	Call
+ * another function, such as fmgr_call_errcontext, before this one to identify
+ * the function itself if desired.
+ */
+int
+trigger_call_errcontext(FunctionCallInfo fcinfo)
+{
+	TriggerData *trigdata;
+	TriggerEvent trigevent;
+	const char *firedby;
+	const char *relkind = NULL;
+	char	   *relname = NULL;
+
+	/* Do nothing if fcinfo doesn't have trigger data. */
+	if (!fcinfo ||
+		!fcinfo->flinfo ||
+		!CALLED_AS_TRIGGER(fcinfo))
+		return 0;
+
+	trigdata = (TriggerData *) fcinfo->context;
+	trigevent = trigdata->tg_event;
+
+	/* Event type */
+	if (TRIGGER_FIRED_BY_DELETE(trigevent))
+		firedby = "DELETE";
+	else if (TRIGGER_FIRED_BY_INSERT(trigevent))
+		firedby = "INSERT";
+	else if (TRIGGER_FIRED_BY_UPDATE(trigevent))
+		firedby = "UPDATE";
+	else if (TRIGGER_FIRED_BY_TRUNCATE(trigevent))
+		firedby = "TRUNCATE";
+	else
+		firedby = "(unknown)";
+
+	/* Table name */
+	if (trigdata->tg_relation)
+	{
+		Relation	rel = trigdata->tg_relation;
+		char	   *nspname = NULL;
+		const char *rname = RelationGetRelationName(rel);
+
+		/* Qualify the relation name if not visible in search path */
+		if (!RelationIsVisible(rel->rd_id))
+			nspname = get_namespace_name(RelationGetNamespace(rel));
+
+		relname = quote_qualified_identifier(nspname, rname);
+
+		if (rel->rd_rel->relkind == RELKIND_RELATION)
+			relkind = "table";
+	}
+
+	errcontext("trigger %s %s %s on %s %s",
+			   TRIGGER_FIRED_BEFORE(trigevent) ? "before" : "after",
+			   firedby,
+			   TRIGGER_FIRED_FOR_ROW(trigevent) ? "row" : "statement",
+			   relkind ? relkind : "",
+			   relname ? relname : "(unknown)");
+	return 0;					/* return value does not matter */
+}
+
 void
 ExecBSInsertTriggers(EState *estate, ResultRelInfo *relinfo)
 {

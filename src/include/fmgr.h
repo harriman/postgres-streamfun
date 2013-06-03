@@ -510,6 +510,8 @@ extern bytea *OidSendFunctionCall(Oid functionId, Datum val);
 /*
  * Routines in fmgr.c
  */
+extern int	fmgr_call_errcontext(FunctionCallInfo fcinfo, bool showInternalNames);
+extern int	fmgr_func_errcontext(Oid functionId, bool showInternalNames);
 extern const Pg_finfo_record *fetch_finfo_record(void *filehandle, char *funcname);
 extern void clear_external_function_hash(void *filehandle);
 extern Oid	fmgr_internal_function(const char *proname);
@@ -529,6 +531,7 @@ extern PGFunction load_external_function(char *filename, char *funcname,
 extern PGFunction lookup_external_function(void *filehandle, char *funcname);
 extern void load_file(const char *filename, bool restricted);
 extern void **find_rendezvous_variable(const char *varName);
+extern char *expand_dynamic_library_name(const char *name);
 
 
 /*

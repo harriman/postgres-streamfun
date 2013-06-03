@@ -18,6 +18,8 @@
 #include "access/tuptoaster.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
+#include "commands/trigger.h"			/* trigger_call_errcontext */
+#include "executor/executor.h"			/* func_expr_errcontext */
 #include "executor/functions.h"
 #include "executor/spi.h"
 #include "lib/stringinfo.h"
@@ -421,6 +423,128 @@ fmgr_info_other_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple)
 		elog(ERROR, "language %u has old-style handler", language);
 
 	ReleaseSysCache(languageTuple);
+}
+
+/*
+ * fmgr_call_errcontext
+ *
+ * When calling ereport, this can be used to add some information about the
+ * function invocation which encountered the error.
+ *
+ * If showInternalNames is true, an effort is made to display lower-level
+ * identifers which may be helpful to the function's implementor (in case
+ * the implementation is faulty) or administrator (in case the function has
+ * been cataloged with incorrect DDL).	Specify false for user-level errors
+ * more likely to be caused by incorrect usage of a correctly implemented
+ * function.
+ */
+int
+fmgr_call_errcontext(FunctionCallInfo fcinfo, bool showInternalNames)
+{
+	if (!fcinfo ||
+		!fcinfo->flinfo)
+		return 0;
+
+	/* Normal evaluation of a function call or operator in an expression? */
+	if (fcinfo->flinfo &&
+		fcinfo->flinfo->fn_expr)
+		func_expr_errcontext((Expr *) fcinfo->flinfo->fn_expr, showInternalNames);
+
+	/* Trigger? */
+	else if (CALLED_AS_TRIGGER(fcinfo))
+	{
+		fmgr_func_errcontext(fcinfo->flinfo->fn_oid, showInternalNames);
+		trigger_call_errcontext(fcinfo);
+	}
+
+	/* Function called directly, bypassing normal expression evaluation. */
+	else
+		fmgr_func_errcontext(fcinfo->flinfo->fn_oid, showInternalNames);
+
+	return 0;					/* return value does not matter */
+}
+
+/*
+ * fmgr_func_errcontext
+ *
+ * When calling ereport, this can be used to add some information to identify
+ * the function which encountered the error.
+ *
+ * If showInternalNames is true, the (internal or C-language external)
+ * function's entry point name and library name are displayed.
+ */
+int
+fmgr_func_errcontext(Oid functionId, bool showInternalNames)
+{
+	char	   *funcNameAndArgTypes;
+	bool		isnull;
+
+	HeapTuple	procedureTuple;
+	Form_pg_proc procedureStruct;
+	Datum		prosrcdatum;
+	Datum		probindatum;
+	char	   *prosrc = NULL;
+	char	   *probin = NULL;
+
+	if (functionId == InvalidOid)
+		return 0;
+
+	/* Format the function name as it would be referenced by the user. */
+	funcNameAndArgTypes = format_procedure(functionId);
+
+	/* Finish up quickly if caller doesn't want lower-level info. */
+	if (!showInternalNames)
+	{
+		errcontext("function %s", funcNameAndArgTypes);
+		return 0;
+	}
+
+	/* Fetch the pg_proc entry. */
+	procedureTuple = SearchSysCache(PROCOID, ObjectIdGetDatum(functionId),
+									0, 0, 0);
+	if (!HeapTupleIsValid(procedureTuple))
+		return 0;
+	procedureStruct = (Form_pg_proc) GETSTRUCT(procedureTuple);
+
+	switch (procedureStruct->prolang)
+	{
+		case INTERNALlanguageId:
+			/* Built-in:  Also display the internal entry point name. */
+			prosrcdatum = SysCacheGetAttr(PROCOID, procedureTuple,
+										  Anum_pg_proc_prosrc, &isnull);
+			if (isnull)
+				break;
+			prosrc = TextDatumGetCString(prosrcdatum);
+
+			errcontext("function %s implemented by internal function %s",
+					   funcNameAndArgTypes, quote_identifier(prosrc));
+			break;
+
+		case ClanguageId:
+			/* C plug-in:  Display with library name and entry point name. */
+			prosrcdatum = SysCacheGetAttr(PROCOID, procedureTuple,
+										  Anum_pg_proc_prosrc, &isnull);
+			if (isnull)
+				break;
+			probindatum = SysCacheGetAttr(PROCOID, procedureTuple,
+										  Anum_pg_proc_probin, &isnull);
+			if (isnull)
+				break;
+			prosrc = TextDatumGetCString(prosrcdatum);
+			probin = TextDatumGetCString(probindatum);
+            probin = expand_dynamic_library_name(probin);
+
+			errcontext("function %s implemented by C function %s in library %s",
+					   funcNameAndArgTypes, quote_identifier(prosrc), probin);
+			break;
+
+		default:
+			errcontext("function %s", funcNameAndArgTypes);
+			break;
+	}
+
+    ReleaseSysCache(procedureTuple);
+	return 0;					/* return value does not matter */
 }
 
 /*

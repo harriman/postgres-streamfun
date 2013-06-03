@@ -131,7 +131,7 @@ static int exec_stmt_dynfors(PLpgSQL_execstate *estate,
 
 static void plpgsql_estate_setup(PLpgSQL_execstate *estate,
 					 PLpgSQL_function *func,
-					 ReturnSetInfo *rsi);
+					 FunctionCallInfo fcinfo);
 static void exec_eval_cleanup(PLpgSQL_execstate *estate);
 
 static void exec_prepare_plan(PLpgSQL_execstate *estate,
@@ -192,7 +192,6 @@ static Datum exec_simple_cast_value(PLpgSQL_execstate *estate,
 					   Datum value, Oid valtype,
 					   Oid reqtype, int32 reqtypmod,
 					   bool isnull);
-static void exec_init_tuple_store(PLpgSQL_execstate *estate);
 static void exec_set_found(PLpgSQL_execstate *estate, bool state);
 static void plpgsql_create_econtext(PLpgSQL_execstate *estate);
 static void plpgsql_destroy_econtext(PLpgSQL_execstate *estate);
@@ -221,7 +220,7 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo)
 	/*
 	 * Setup the execution state
 	 */
-	plpgsql_estate_setup(&estate, func, (ReturnSetInfo *) fcinfo->resultinfo);
+	plpgsql_estate_setup(&estate, func, fcinfo);
 
 	/*
 	 * Setup error traceback support for ereport()
@@ -346,37 +345,18 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo)
 	estate.err_stmt = NULL;
 	estate.err_text = gettext_noop("while casting return value to function's return type");
 
-	fcinfo->isnull = estate.retisnull;
-
 	if (estate.retisset)
 	{
-		ReturnSetInfo *rsi = estate.rsi;
+		/* Check that our result tupdesc matches caller's, and free it. */
+		srf_verify_expected_tupdesc(fcinfo, estate.rettupdesc, true);
+		estate.rettupdesc = NULL;
 
-		/* Check caller can handle a set result */
-		if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-			(rsi->allowedModes & SFRM_Materialize) == 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("set-valued function called in context that cannot accept a set")));
-		rsi->returnMode = SFRM_Materialize;
-
-		/* If we produced any tuples, send back the result */
-		if (estate.tuple_store)
-		{
-			rsi->setResult = estate.tuple_store;
-			if (estate.rettupdesc)
-			{
-				MemoryContext oldcxt;
-
-				oldcxt = MemoryContextSwitchTo(estate.tuple_store_cxt);
-				rsi->setDesc = CreateTupleDescCopy(estate.rettupdesc);
-				MemoryContextSwitchTo(oldcxt);
-			}
-		}
+		/* Results are in tuplestore. */
 		estate.retval = (Datum) 0;
-		fcinfo->isnull = true;
 	}
-	else if (!estate.retisnull)
+	else if (estate.retisnull)
+		fcinfo->isnull = true;
+	else
 	{
 		if (estate.retistuple)
 		{
@@ -436,13 +416,13 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo)
 											&(func->fn_retinput),
 											func->fn_rettypioparam,
 											-1,
-											fcinfo->isnull);
+											false);
 
 			/*
 			 * If the function's return type isn't by value, copy the value
 			 * into upper executor memory context.
 			 */
-			if (!fcinfo->isnull && !func->fn_retbyval)
+			if (!func->fn_retbyval)
 			{
 				Size		len;
 				void	   *tmp;
@@ -2163,11 +2143,7 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("cannot use RETURN NEXT in a non-SETOF function")));
 
-	if (estate->tuple_store == NULL)
-		exec_init_tuple_store(estate);
-
-	/* rettupdesc will be filled by exec_init_tuple_store */
-	tupdesc = estate->rettupdesc;
+	tupdesc = estate->expected_tupdesc;
 	natts = tupdesc->natts;
 
 	if (stmt->retvarno >= 0)
@@ -2310,8 +2286,7 @@ exec_stmt_return_query(PLpgSQL_execstate *estate,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("cannot use RETURN QUERY in a non-SETOF function")));
 
-	if (estate->tuple_store == NULL)
-		exec_init_tuple_store(estate);
+	Assert(estate->tuple_store);
 
 	if (stmt->query != NULL)
 	{
@@ -2327,7 +2302,7 @@ exec_stmt_return_query(PLpgSQL_execstate *estate,
 	}
 
 	tupmap = convert_tuples_by_position(portal->tupDesc,
-										estate->rettupdesc,
+										estate->expected_tupdesc,
 										gettext_noop("structure of query does not match function result type"));
 
 	while (true)
@@ -2363,44 +2338,6 @@ exec_stmt_return_query(PLpgSQL_execstate *estate,
 	exec_set_found(estate, processed != 0);
 
 	return PLPGSQL_RC_OK;
-}
-
-static void
-exec_init_tuple_store(PLpgSQL_execstate *estate)
-{
-	ReturnSetInfo *rsi = estate->rsi;
-	MemoryContext oldcxt;
-	ResourceOwner oldowner;
-
-	/*
-	 * Check caller can handle a set result in the way we want
-	 */
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-
-	/*
-	 * Switch to the right memory context and resource owner for storing
-	 * the tuplestore for return set. If we're within a subtransaction opened
-	 * for an exception-block, for example, we must still create the
-	 * tuplestore in the resource owner that was active when this function was
-	 * entered, and not in the subtransaction resource owner.
-	 */
-	oldcxt = MemoryContextSwitchTo(estate->tuple_store_cxt);
-	oldowner = CurrentResourceOwner;
-	CurrentResourceOwner = estate->tuple_store_owner;
-
-	estate->tuple_store =
-		tuplestore_begin_heap(rsi->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	CurrentResourceOwner = oldowner;
-	MemoryContextSwitchTo(oldcxt);
-
-	estate->rettupdesc = rsi->expectedDesc;
 }
 
 /* ----------
@@ -2603,7 +2540,7 @@ exec_stmt_raise(PLpgSQL_execstate *estate, PLpgSQL_stmt_raise *stmt)
 static void
 plpgsql_estate_setup(PLpgSQL_execstate *estate,
 					 PLpgSQL_function *func,
-					 ReturnSetInfo *rsi)
+					 FunctionCallInfo fcinfo)
 {
 	estate->retval = (Datum) 0;
 	estate->retisnull = true;
@@ -2618,18 +2555,16 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	estate->rettupdesc = NULL;
 	estate->exitlabel = NULL;
 
-	estate->tuple_store = NULL;
-	if (rsi)
+	if (estate->retisset)
 	{
-		estate->tuple_store_cxt = rsi->econtext->ecxt_per_query_memory;
-		estate->tuple_store_owner = CurrentResourceOwner;
+		estate->tuple_store = srf_init_materialize_mode(fcinfo);
+		estate->expected_tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 	}
 	else
 	{
-		estate->tuple_store_cxt = NULL;
-		estate->tuple_store_owner = NULL;
+		estate->tuple_store = NULL;
+		estate->expected_tupdesc = NULL;
 	}
-	estate->rsi = rsi;
 
 	estate->trig_nargs = 0;
 	estate->trig_argv = NULL;

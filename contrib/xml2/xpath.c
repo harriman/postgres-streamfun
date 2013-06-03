@@ -508,9 +508,7 @@ xpath_table(PG_FUNCTION_ARGS)
 	TupleDesc	ret_tupdesc;
 	HeapTuple	ret_tuple;
 
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	AttInMetadata *attinmeta;
-	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 
 	char	  **values;
@@ -528,45 +526,14 @@ xpath_table(PG_FUNCTION_ARGS)
 	bool		had_values;		/* To determine end of nodeset results */
 	StringInfoData query_buf;
 
-	/* We only have a valid tuple description in table function mode */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("xpath_table must be called as a table function")));
-
 	/*
 	 * We want to materialise because it means that we don't have to carry
 	 * libxml2 parser state between invocations of this function
 	 */
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-			   errmsg("xpath_table requires Materialize mode, but it is not "
-					  "allowed in this context")));
-
-	/*
-	 * The tuplestore must exist in a higher context than this function call
-	 * (per_query_ctx is used)
-	 */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/*
-	 * Create the tuplestore - work_mem is the max in-memory size before a
-	 * file is created on disk to hold it.
-	 */
-	tupstore =
-		tuplestore_begin_heap(rsinfo->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	MemoryContextSwitchTo(oldcontext);
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	/* get the requested return tuple description */
-	ret_tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
+	ret_tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	/* must have at least one output column (for the pkey) */
 	if (ret_tupdesc->natts < 1)
@@ -584,10 +551,7 @@ xpath_table(PG_FUNCTION_ARGS)
 
 	attinmeta = TupleDescGetAttInMetadata(ret_tupdesc);
 
-	/* Set return mode and allocate value space. */
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setDesc = ret_tupdesc;
-
+	/* Allocate value space. */
 	values = (char **) palloc(ret_tupdesc->natts * sizeof(char *));
 	xpaths = (xmlChar **) palloc(ret_tupdesc->natts * sizeof(xmlChar *));
 
@@ -620,6 +584,9 @@ xpath_table(PG_FUNCTION_ARGS)
 					 xmlfield,
 					 relname,
 					 condition);
+
+	/* Remember caller's memory context. */
+	oldcontext = CurrentMemoryContext;
 
 	if ((ret = SPI_connect()) < 0)
 		elog(ERROR, "xpath_table: SPI_connect returned %d", ret);
@@ -777,11 +744,7 @@ xpath_table(PG_FUNCTION_ARGS)
 			pfree(xmldoc);
 	}
 
-	tuplestore_donestoring(tupstore);
-
 	SPI_finish();
-
-	rsinfo->setResult = tupstore;
 
 	/*
 	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual

@@ -76,7 +76,6 @@ static void incompatible_module_error(const char *libname,
 						  const Pg_magic_struct *module_magic_data);
 static void internal_unload_library(const char *libname);
 static bool file_exists(const char *name);
-static char *expand_dynamic_library_name(const char *name);
 static void check_restricted_library_name(const char *name);
 static char *substitute_libpath_macro(const char *name);
 static char *find_in_dynamic_libpath(const char *basename);
@@ -478,7 +477,7 @@ file_exists(const char *name)
  *
  * The result will always be freshly palloc'd.
  */
-static char *
+char *
 expand_dynamic_library_name(const char *name)
 {
 	bool		have_slash;
