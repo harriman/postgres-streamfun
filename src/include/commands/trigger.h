@@ -123,6 +123,8 @@ extern TriggerDesc *CopyTriggerDesc(TriggerDesc *trigdesc);
 
 extern void FreeTriggerDesc(TriggerDesc *trigdesc);
 
+extern int	trigger_call_errcontext(FunctionCallInfo fcinfo);
+
 extern void ExecBSInsertTriggers(EState *estate,
 					 ResultRelInfo *relinfo);
 extern void ExecASInsertTriggers(EState *estate,

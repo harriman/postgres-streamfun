@@ -172,6 +172,7 @@ struct Tuplestorestate
 
 	int			writepos_file;	/* file# (valid if READFILE state) */
 	off_t		writepos_offset;	/* offset (valid if READFILE state) */
+	unsigned int finaltuplen;	/* size of the last tuple in the file */
 };
 
 #define COPYTUP(state,tup)	((*(state)->copytup) (state, tup))
@@ -276,6 +277,7 @@ tuplestore_begin_common(int eflags, bool interXact, int maxKBytes)
 	state->readptrs[0].eof_reached = false;
 	state->readptrs[0].current = 0;
 
+	state->finaltuplen = 0;
 	return state;
 }
 
@@ -419,6 +421,7 @@ tuplestore_clear(Tuplestorestate *state)
 	state->truncated = false;
 	state->memtupdeleted = 0;
 	state->memtupcount = 0;
+	state->finaltuplen = 0;
 	readptr = state->readptrs;
 	for (i = 0; i < state->readptrcount; readptr++, i++)
 	{
@@ -744,6 +747,11 @@ tuplestore_puttuple_common(Tuplestorestate *state, void *tuple)
  *
  * Backward scan is only allowed if randomAccess was set true or
  * EXEC_FLAG_BACKWARD was specified to tuplestore_set_eflags().
+ *
+ * However, ExecMaterializeTableFunction() needs to be able to back up from
+ * eof_reached to the position after the last tuple but before eof.  So we
+ * allow eof_reached state to be exited via a backward scan of at most one 
+ * tuple, the last one in the tuplestore, regardless of eflags.  
  */
 static void *
 tuplestore_gettuple(Tuplestorestate *state, bool forward,
@@ -752,8 +760,6 @@ tuplestore_gettuple(Tuplestorestate *state, bool forward,
 	TSReadPointer *readptr = &state->readptrs[state->activeptr];
 	unsigned int tuplen;
 	void	   *tup;
-
-	Assert(forward || (readptr->eflags & EXEC_FLAG_BACKWARD));
 
 	switch (state->status)
 	{
@@ -784,6 +790,8 @@ tuplestore_gettuple(Tuplestorestate *state, bool forward,
 				}
 				else
 				{
+					Assert(readptr->eflags & EXEC_FLAG_BACKWARD);
+
 					if (readptr->current <= state->memtupdeleted)
 					{
 						Assert(!state->truncated);
@@ -839,27 +847,29 @@ tuplestore_gettuple(Tuplestorestate *state, bool forward,
 			 *
 			 * if all tuples are fetched already then we return last tuple,
 			 * else tuple before last returned.
-			 *
-			 * Back up to fetch previously-returned tuple's ending length
-			 * word. If seek fails, assume we are at start of file.
 			 */
-			if (BufFileSeek(state->myfile, 0, -(long) sizeof(unsigned int),
-							SEEK_CUR) != 0)
-			{
-				/* even a failed backwards fetch gets you out of eof state */
-				readptr->eof_reached = false;
-				Assert(!state->truncated);
-				return NULL;
-			}
-			tuplen = getlen(state, false);
-
 			if (readptr->eof_reached)
 			{
 				readptr->eof_reached = false;
-				/* We will return the tuple returned before returning NULL */
+				if (state->finaltuplen == 0)
+					return NULL;
+				tuplen = state->finaltuplen;	/* includes one length word */
+				if (!state->backward)
+					tuplen -= sizeof(unsigned int);
 			}
 			else
 			{
+				Assert(readptr->eflags & EXEC_FLAG_BACKWARD);
+
+				/*
+				 * Back up to fetch previously-returned tuple's ending length
+				 * word. If seek fails, assume we are at start of file.
+				 */
+				if (BufFileSeek(state->myfile, 0, -(long) sizeof(unsigned int),
+								SEEK_CUR) != 0)
+					elog(ERROR, "tuplestore seek failed");
+				tuplen = getlen(state, false);
+
 				/*
 				 * Back up to get ending length word of tuple before it.
 				 */
@@ -1287,6 +1297,7 @@ writetup_heap(Tuplestorestate *state, void *tup)
 		if (BufFileWrite(state->myfile, (void *) &tuplen,
 						 sizeof(tuplen)) != sizeof(tuplen))
 			elog(ERROR, "write failed");
+	state->finaltuplen = tuplen;
 
 	FREEMEM(state, GetMemoryChunkSpace(tuple));
 	heap_free_minimal_tuple(tuple);

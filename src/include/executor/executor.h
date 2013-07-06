@@ -205,10 +205,28 @@ extern Datum GetAttributeByNum(HeapTupleHeader tuple, AttrNumber attrno,
 				  bool *isNull);
 extern Datum GetAttributeByName(HeapTupleHeader tuple, const char *attname,
 				   bool *isNull);
-extern Tuplestorestate *ExecMakeTableFunctionResult(ExprState *funcexpr,
-							ExprContext *econtext,
-							TupleDesc expectedDesc,
-							bool randomAccess);
+extern int	func_expr_errcontext(Expr *expr, bool showInternalNames);
+extern void get_expr_result_tupdesc(Expr *expr,
+						const char *scalarattnameornull,
+						TupleDesc *tupdesc_out,
+						bool *returnstuple_out);
+extern void	ExecVerifyExpectedTupleDesc(FunctionCallInfo fcinfo, 
+						TupleDesc actualDesc, 
+						bool freeActual);
+extern void ExecVerifyReturnedRowType(Expr *expr, 
+						Datum result,
+						TupleDesc expectedDesc, 
+						Oid *returnedTypeId_inout, 
+						int32 *returnedTypMod_inout);
+extern ExprState *ExecInitTableFunction(Expr *expr,
+						PlanState *parent,
+						ExprContext *econtext,
+						TupleDesc expectedDesc,
+						bool returnsTuple,
+						bool randomAccess);
+extern bool ExecMaterializeTableFunction(FunctionScanState *scanstate,
+						ExprContext *econtext,
+						TupleTableSlot *slot);
 extern Datum ExecEvalExprSwitchContext(ExprState *expression, ExprContext *econtext,
 						  bool *isNull, ExprDoneCond *isDone);
 extern ExprState *ExecInitExpr(Expr *node, PlanState *parent);
@@ -280,6 +298,7 @@ extern ExprContext *CreateExprContext(EState *estate);
 extern ExprContext *CreateStandaloneExprContext(void);
 extern void FreeExprContext(ExprContext *econtext, bool isCommit);
 extern void ReScanExprContext(ExprContext *econtext);
+extern void ShutdownExprContext(ExprContext *econtext, bool isCommit);
 
 #define ResetExprContext(econtext) \
 	MemoryContextReset((econtext)->ecxt_per_tuple_memory)
