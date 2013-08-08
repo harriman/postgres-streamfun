@@ -81,28 +81,27 @@ typedef struct remoteConn
  * Internal declarations
  */
 static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async);
-static void prepTuplestoreResult(FunctionCallInfo fcinfo);
-static void materializeResult(FunctionCallInfo fcinfo, PGresult *res);
+static void materializeResult(FunctionCallInfo fcinfo, Tuplestorestate *tupstore, PGresult *res);
 static remoteConn *getConnectionByName(const char *name);
 static HTAB *createConnHash(void);
-static void createNewConnection(const char *name, remoteConn *rconn);
-static void deleteConnection(const char *name);
+static void createNewConnection(FunctionCallInfo fcinfo, const char *name, remoteConn *rconn);
+static void deleteConnection(FunctionCallInfo fcinfo, const char *name);
 static char **get_pkey_attnames(Relation rel, int16 *numatts);
 static char **get_text_array_contents(ArrayType *array, int *numitems);
-static char *get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
-static char *get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals);
-static char *get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
+static char *get_sql_insert(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
+static char *get_sql_delete(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals);
+static char *get_sql_update(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
 static char *quote_ident_cstr(char *rawstr);
 static int	get_attnum_pk_pos(int *pkattnums, int pknumatts, int key);
-static HeapTuple get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals);
+static HeapTuple get_tuple_of_interest(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals);
 static Relation get_rel_from_relname(text *relname_text, LOCKMODE lockmode, AclMode aclmode);
 static char *generate_relation_name(Relation rel);
-static void dblink_connstr_check(const char *connstr);
-static void dblink_security_check(PGconn *conn, remoteConn *rconn);
-static void dblink_res_error(const char *conname, PGresult *res, const char *dblink_context_msg, bool fail);
+static void dblink_connstr_check(FunctionCallInfo fcinfo, const char *connstr);
+static void dblink_security_check(FunctionCallInfo fcinfo, PGconn *conn, remoteConn *rconn);
+static void dblink_res_error(FunctionCallInfo fcinfo, const char *conname, PGresult *res, const char *dblink_context_msg, bool fail);
 static char *get_connect_string(const char *servername);
 static char *escape_param_str(const char *from);
-static void validate_pkattnums(Relation rel,
+static void validate_pkattnums(FunctionCallInfo fcinfo, Relation rel,
 				   int2vector *pkattnums_arg, int32 pknumatts_arg,
 				   int **pkattnums, int *pknumatts);
 
@@ -157,11 +156,13 @@ typedef struct remoteConnHashEnt
 		if(conname) \
 			ereport(ERROR, \
 					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST), \
-					 errmsg("connection \"%s\" not available", conname))); \
+					 errmsg("connection \"%s\" not available", conname), \
+					 fmgr_call_errcontext(fcinfo, false))); \
 		else \
 			ereport(ERROR, \
 					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST), \
-					 errmsg("connection not available"))); \
+					 errmsg("connection not available"), \
+					 fmgr_call_errcontext(fcinfo, false))); \
 	} while (0)
 
 #define DBLINK_GET_CONN \
@@ -180,7 +181,7 @@ typedef struct remoteConnHashEnt
 				{ \
 					connstr = conname_or_str; \
 				} \
-				dblink_connstr_check(connstr); \
+				dblink_connstr_check(fcinfo, connstr); \
 				conn = PQconnectdb(connstr); \
 				if (PQstatus(conn) == CONNECTION_BAD) \
 				{ \
@@ -189,9 +190,10 @@ typedef struct remoteConnHashEnt
 					ereport(ERROR, \
 							(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION), \
 							 errmsg("could not establish connection"), \
-							 errdetail_internal("%s", msg))); \
+							 errdetail_internal("%s", msg), \
+							 fmgr_call_errcontext(fcinfo, false))); \
 				} \
-				dblink_security_check(conn, rconn); \
+				dblink_security_check(fcinfo, conn, rconn); \
 				PQsetClientEncoding(conn, GetDatabaseEncodingName()); \
 				freeconn = true; \
 			} \
@@ -252,7 +254,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 		connstr = conname_or_str;
 
 	/* check password in connection string if not superuser */
-	dblink_connstr_check(connstr);
+	dblink_connstr_check(fcinfo, connstr);
 	conn = PQconnectdb(connstr);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
@@ -265,11 +267,12 @@ dblink_connect(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
 				 errmsg("could not establish connection"),
-				 errdetail_internal("%s", msg)));
+				 errdetail_internal("%s", msg),
+				 fmgr_call_errcontext(fcinfo, false)));
 	}
 
 	/* check password actually used if not superuser */
-	dblink_security_check(conn, rconn);
+	dblink_security_check(fcinfo, conn, rconn);
 
 	/* attempt to set client encoding to match server encoding */
 	PQsetClientEncoding(conn, GetDatabaseEncodingName());
@@ -277,7 +280,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 	if (connname)
 	{
 		rconn->conn = conn;
-		createNewConnection(connname, rconn);
+		createNewConnection(fcinfo, connname, rconn);
 	}
 	else
 		pconn->conn = conn;
@@ -314,7 +317,7 @@ dblink_disconnect(PG_FUNCTION_ARGS)
 	PQfinish(conn);
 	if (rconn)
 	{
-		deleteConnection(conname);
+		deleteConnection(fcinfo, conname);
 		pfree(rconn);
 	}
 	else
@@ -408,7 +411,7 @@ dblink_open(PG_FUNCTION_ARGS)
 	res = PQexec(conn, buf.data);
 	if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
-		dblink_res_error(conname, res, "could not open cursor", fail);
+		dblink_res_error(fcinfo, conname, res, "could not open cursor", fail);
 		PG_RETURN_TEXT_P(cstring_to_text("ERROR"));
 	}
 
@@ -477,7 +480,7 @@ dblink_close(PG_FUNCTION_ARGS)
 	res = PQexec(conn, buf.data);
 	if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
-		dblink_res_error(conname, res, "could not close cursor", fail);
+		dblink_res_error(fcinfo, conname, res, "could not close cursor", fail);
 		PG_RETURN_TEXT_P(cstring_to_text("ERROR"));
 	}
 
@@ -510,6 +513,7 @@ PG_FUNCTION_INFO_V1(dblink_fetch);
 Datum
 dblink_fetch(PG_FUNCTION_ARGS)
 {
+	Tuplestorestate *tupstore;
 	PGresult   *res = NULL;
 	char	   *conname = NULL;
 	remoteConn *rconn = NULL;
@@ -519,7 +523,8 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	int			howmany = 0;
 	bool		fail = true;	/* default to backward compatible */
 
-	prepTuplestoreResult(fcinfo);
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	DBLINK_INIT;
 
@@ -580,7 +585,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 		(PQresultStatus(res) != PGRES_COMMAND_OK &&
 		 PQresultStatus(res) != PGRES_TUPLES_OK))
 	{
-		dblink_res_error(conname, res, "could not fetch from cursor", fail);
+		dblink_res_error(fcinfo, conname, res, "could not fetch from cursor", fail);
 		return (Datum) 0;
 	}
 	else if (PQresultStatus(res) == PGRES_COMMAND_OK)
@@ -589,10 +594,11 @@ dblink_fetch(PG_FUNCTION_ARGS)
 		PQclear(res);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_NAME),
-				 errmsg("cursor \"%s\" does not exist", curname)));
+				 errmsg("cursor \"%s\" does not exist", curname),
+				 fmgr_call_errcontext(fcinfo, false)));
 	}
 
-	materializeResult(fcinfo, res);
+	materializeResult(fcinfo, tupstore, res);
 	return (Datum) 0;
 }
 
@@ -643,6 +649,7 @@ dblink_get_result(PG_FUNCTION_ARGS)
 static Datum
 dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 {
+	Tuplestorestate *tupstore;
 	char	   *msg;
 	PGresult   *res = NULL;
 	PGconn	   *conn = NULL;
@@ -653,7 +660,8 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 	bool		fail = true;	/* default to backward compatible */
 	bool		freeconn = false;
 
-	prepTuplestoreResult(fcinfo);
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	DBLINK_INIT;
 
@@ -732,41 +740,12 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 		(PQresultStatus(res) != PGRES_COMMAND_OK &&
 		 PQresultStatus(res) != PGRES_TUPLES_OK))
 	{
-		dblink_res_error(conname, res, "could not execute query", fail);
+		dblink_res_error(fcinfo, conname, res, "could not execute query", fail);
 		return (Datum) 0;
 	}
 
-	materializeResult(fcinfo, res);
+	materializeResult(fcinfo, tupstore, res);
 	return (Datum) 0;
-}
-
-/*
- * Verify function caller can handle a tuplestore result, and set up for that.
- *
- * Note: if the caller returns without actually creating a tuplestore, the
- * executor will treat the function result as an empty set.
- */
-static void
-prepTuplestoreResult(FunctionCallInfo fcinfo)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	/* check to see if query supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
-
-	/* let the executor know we're sending back a tuplestore */
-	rsinfo->returnMode = SFRM_Materialize;
-
-	/* caller must fill these to return a non-empty result */
-	rsinfo->setResult = NULL;
-	rsinfo->setDesc = NULL;
 }
 
 /*
@@ -775,13 +754,8 @@ prepTuplestoreResult(FunctionCallInfo fcinfo)
  * The PGresult will be released in this function.
  */
 static void
-materializeResult(FunctionCallInfo fcinfo, PGresult *res)
+materializeResult(FunctionCallInfo fcinfo, Tuplestorestate *tupstore, PGresult *res)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	/* prepTuplestoreResult must have been called previously */
-	Assert(rsinfo->returnMode == SFRM_Materialize);
-
 	PG_TRY();
 	{
 		TupleDesc	tupdesc;
@@ -800,6 +774,10 @@ materializeResult(FunctionCallInfo fcinfo, PGresult *res)
 			tupdesc = CreateTemplateTupleDesc(1, false);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
+
+			/* Caller has to expect tuples in this format; else give error. */
+			srf_verify_expected_tupdesc(fcinfo, tupdesc);
+
 			ntuples = 1;
 			nfields = 1;
 		}
@@ -809,27 +787,9 @@ materializeResult(FunctionCallInfo fcinfo, PGresult *res)
 
 			is_sql_cmd = false;
 
-			/* get a tuple descriptor for our result type */
-			switch (get_call_result_type(fcinfo, NULL, &tupdesc))
-			{
-				case TYPEFUNC_COMPOSITE:
-					/* success */
-					break;
-				case TYPEFUNC_RECORD:
-					/* failed to determine actual type of RECORD */
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("function returning record called in context "
-							   "that cannot accept type record")));
-					break;
-				default:
-					/* result type isn't composite */
-					elog(ERROR, "return type must be a row type");
-					break;
-			}
+			/* expected result tuple descriptor has been set up by caller */
+			tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
-			/* make sure we have a persistent copy of the tupdesc */
-			tupdesc = CreateTupleDescCopy(tupdesc);
 			ntuples = PQntuples(res);
 			nfields = PQnfields(res);
 		}
@@ -841,25 +801,16 @@ materializeResult(FunctionCallInfo fcinfo, PGresult *res)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
 					 errmsg("remote query result rowtype does not match "
-							"the specified FROM clause rowtype")));
+							"the specified FROM clause rowtype"),
+					 fmgr_call_errcontext(fcinfo, false)));
 
 		if (ntuples > 0)
 		{
 			AttInMetadata *attinmeta;
-			Tuplestorestate *tupstore;
-			MemoryContext oldcontext;
 			int			row;
 			char	  **values;
 
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
-
-			oldcontext = MemoryContextSwitchTo(
-									rsinfo->econtext->ecxt_per_query_memory);
-			tupstore = tuplestore_begin_heap(true, false, work_mem);
-			rsinfo->setResult = tupstore;
-			rsinfo->setDesc = tupdesc;
-			MemoryContextSwitchTo(oldcontext);
-
 			values = (char **) palloc(nfields * sizeof(char *));
 
 			/* put all tuples into the tuplestore */
@@ -888,9 +839,6 @@ materializeResult(FunctionCallInfo fcinfo, PGresult *res)
 				tuple = BuildTupleFromCStrings(attinmeta, values);
 				tuplestore_puttuple(tupstore, tuple);
 			}
-
-			/* clean up and return the tuplestore */
-			tuplestore_donestoring(tupstore);
 		}
 
 		PQclear(res);
@@ -1087,7 +1035,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 			(PQresultStatus(res) != PGRES_COMMAND_OK &&
 			 PQresultStatus(res) != PGRES_TUPLES_OK))
 		{
-			dblink_res_error(conname, res, "could not execute command", fail);
+			dblink_res_error(fcinfo, conname, res, "could not execute command", fail);
 
 			/*
 			 * and save a copy of the command status string to return as our
@@ -1109,7 +1057,8 @@ dblink_exec(PG_FUNCTION_ARGS)
 			PQclear(res);
 			ereport(ERROR,
 				  (errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
-				   errmsg("statement returning results not allowed")));
+				   errmsg("statement returning results not allowed"),
+				   fmgr_call_errcontext(fcinfo, false)));
 		}
 	}
 	PG_CATCH();
@@ -1288,7 +1237,7 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 	/*
 	 * Process pkattnums argument.
 	 */
-	validate_pkattnums(rel, pkattnums_arg, pknumatts_arg,
+	validate_pkattnums(fcinfo, rel, pkattnums_arg, pknumatts_arg,
 					   &pkattnums, &pknumatts);
 
 	/*
@@ -1304,7 +1253,8 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 				 errmsg("source key array length must match number of key " \
-						"attributes")));
+						"attributes"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/*
 	 * Target array is made up of key values that will be used to build the
@@ -1319,12 +1269,13 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 				 errmsg("target key array length must match number of key " \
-						"attributes")));
+						"attributes"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.
 	 */
-	sql = get_sql_insert(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
+	sql = get_sql_insert(fcinfo, rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
 
 	/*
 	 * Now we can close the relation.
@@ -1376,7 +1327,7 @@ dblink_build_sql_delete(PG_FUNCTION_ARGS)
 	/*
 	 * Process pkattnums argument.
 	 */
-	validate_pkattnums(rel, pkattnums_arg, pknumatts_arg,
+	validate_pkattnums(fcinfo, rel, pkattnums_arg, pknumatts_arg,
 					   &pkattnums, &pknumatts);
 
 	/*
@@ -1392,12 +1343,13 @@ dblink_build_sql_delete(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 				 errmsg("target key array length must match number of key " \
-						"attributes")));
+						"attributes"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.
 	 */
-	sql = get_sql_delete(rel, pkattnums, pknumatts, tgt_pkattvals);
+	sql = get_sql_delete(fcinfo, rel, pkattnums, pknumatts, tgt_pkattvals);
 
 	/*
 	 * Now we can close the relation.
@@ -1456,7 +1408,7 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 	/*
 	 * Process pkattnums argument.
 	 */
-	validate_pkattnums(rel, pkattnums_arg, pknumatts_arg,
+	validate_pkattnums(fcinfo, rel, pkattnums_arg, pknumatts_arg,
 					   &pkattnums, &pknumatts);
 
 	/*
@@ -1472,7 +1424,8 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 				 errmsg("source key array length must match number of key " \
-						"attributes")));
+						"attributes"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/*
 	 * Target array is made up of key values that will be used to build the
@@ -1487,12 +1440,13 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 				 errmsg("target key array length must match number of key " \
-						"attributes")));
+						"attributes"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.
 	 */
-	sql = get_sql_update(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
+	sql = get_sql_update(fcinfo, rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
 
 	/*
 	 * Now we can close the relation.
@@ -1536,23 +1490,17 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	PGconn	   *conn = NULL;
 	remoteConn *rconn = NULL;
 	PGnotify   *notify;
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 
-	prepTuplestoreResult(fcinfo);
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	DBLINK_INIT;
 	if (PG_NARGS() == 1)
 		DBLINK_GET_NAMED_CONN;
 	else
 		conn = pconn->conn;
-
-	/* create the tuplestore in per-query memory */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
 	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "notify_name",
@@ -1562,11 +1510,8 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "extra",
 					   TEXTOID, -1, 0);
 
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 	PQconsumeInput(conn);
 	while ((notify = PQnotifies(conn)) != NULL)
@@ -1594,10 +1539,6 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 		PQfreemem(notify);
 		PQconsumeInput(conn);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 
@@ -1724,7 +1665,7 @@ get_text_array_contents(ArrayType *array, int *numitems)
 }
 
 static char *
-get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
+get_sql_insert(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
 {
 	char	   *relname;
 	HeapTuple	tuple;
@@ -1744,11 +1685,12 @@ get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals
 	tupdesc = rel->rd_att;
 	natts = tupdesc->natts;
 
-	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals);
+	tuple = get_tuple_of_interest(fcinfo, rel, pkattnums, pknumatts, src_pkattvals);
 	if (!tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
-				 errmsg("source row not found")));
+				 errmsg("source row not found"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	appendStringInfo(&buf, "INSERT INTO %s(", relname);
 
@@ -1802,7 +1744,7 @@ get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals
 }
 
 static char *
-get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals)
+get_sql_delete(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals)
 {
 	char	   *relname;
 	TupleDesc	tupdesc;
@@ -1838,7 +1780,7 @@ get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals
 }
 
 static char *
-get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
+get_sql_update(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
 {
 	char	   *relname;
 	HeapTuple	tuple;
@@ -1858,11 +1800,12 @@ get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals
 	tupdesc = rel->rd_att;
 	natts = tupdesc->natts;
 
-	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals);
+	tuple = get_tuple_of_interest(fcinfo, rel, pkattnums, pknumatts, src_pkattvals);
 	if (!tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
-				 errmsg("source row not found")));
+				 errmsg("source row not found"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	appendStringInfo(&buf, "UPDATE %s SET ", relname);
 
@@ -1956,7 +1899,7 @@ get_attnum_pk_pos(int *pkattnums, int pknumatts, int key)
 }
 
 static HeapTuple
-get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals)
+get_tuple_of_interest(FunctionCallInfo fcinfo, Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals)
 {
 	char	   *relname;
 	TupleDesc	tupdesc;
@@ -2033,7 +1976,8 @@ get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pk
 	if ((ret == SPI_OK_SELECT) && (SPI_processed > 1))
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
-				 errmsg("source criteria matched more than one record")));
+				 errmsg("source criteria matched more than one record"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	else if (ret == SPI_OK_SELECT && SPI_processed == 1)
 	{
@@ -2140,7 +2084,7 @@ createConnHash(void)
 }
 
 static void
-createNewConnection(const char *name, remoteConn *rconn)
+createNewConnection(FunctionCallInfo fcinfo, const char *name, remoteConn *rconn)
 {
 	remoteConnHashEnt *hentry;
 	bool		found;
@@ -2161,7 +2105,8 @@ createNewConnection(const char *name, remoteConn *rconn)
 
 		ereport(ERROR,
 				(errcode(ERRCODE_DUPLICATE_OBJECT),
-				 errmsg("duplicate connection name")));
+				 errmsg("duplicate connection name"),
+				 fmgr_call_errcontext(fcinfo, false)));
 	}
 
 	hentry->rconn = rconn;
@@ -2169,7 +2114,7 @@ createNewConnection(const char *name, remoteConn *rconn)
 }
 
 static void
-deleteConnection(const char *name)
+deleteConnection(FunctionCallInfo fcinfo, const char *name)
 {
 	remoteConnHashEnt *hentry;
 	bool		found;
@@ -2186,12 +2131,13 @@ deleteConnection(const char *name)
 	if (!hentry)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("undefined connection name")));
+				 errmsg("undefined connection name"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 }
 
 static void
-dblink_security_check(PGconn *conn, remoteConn *rconn)
+dblink_security_check(FunctionCallInfo fcinfo, PGconn *conn, remoteConn *rconn)
 {
 	if (!superuser())
 	{
@@ -2205,7 +2151,8 @@ dblink_security_check(PGconn *conn, remoteConn *rconn)
 				  (errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 				   errmsg("password is required"),
 				   errdetail("Non-superuser cannot connect if the server does not request a password."),
-				   errhint("Target server's authentication method must be changed.")));
+				   errhint("Target server's authentication method must be changed."),
+				   fmgr_call_errcontext(fcinfo, false)));
 		}
 	}
 }
@@ -2217,7 +2164,7 @@ dblink_security_check(PGconn *conn, remoteConn *rconn)
  * to be accessible to non-superusers.
  */
 static void
-dblink_connstr_check(const char *connstr)
+dblink_connstr_check(FunctionCallInfo fcinfo, const char *connstr)
 {
 	if (!superuser())
 	{
@@ -2246,12 +2193,13 @@ dblink_connstr_check(const char *connstr)
 			ereport(ERROR,
 				  (errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 				   errmsg("password is required"),
-				   errdetail("Non-superusers must provide a password in the connection string.")));
+				   errdetail("Non-superusers must provide a password in the connection string."),
+				   fmgr_call_errcontext(fcinfo, false)));
 	}
 }
 
 static void
-dblink_res_error(const char *conname, PGresult *res, const char *dblink_context_msg, bool fail)
+dblink_res_error(FunctionCallInfo fcinfo, const char *conname, PGresult *res, const char *dblink_context_msg, bool fail)
 {
 	int			level;
 	char	   *pg_diag_sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
@@ -2299,7 +2247,8 @@ dblink_res_error(const char *conname, PGresult *res, const char *dblink_context_
 			 message_hint ? errhint("%s", message_hint) : 0,
 			 message_context ? errcontext("%s", message_context) : 0,
 		  errcontext("Error occurred on dblink connection named \"%s\": %s.",
-					 dblink_context_conname, dblink_context_msg)));
+					 dblink_context_conname, dblink_context_msg),
+		  fmgr_call_errcontext(fcinfo, false)));
 }
 
 /*
@@ -2403,7 +2352,7 @@ escape_param_str(const char *str)
  * attnums.
  */
 static void
-validate_pkattnums(Relation rel,
+validate_pkattnums(FunctionCallInfo fcinfo, Relation rel,
 				   int2vector *pkattnums_arg, int32 pknumatts_arg,
 				   int **pkattnums, int *pknumatts)
 {
@@ -2418,7 +2367,8 @@ validate_pkattnums(Relation rel,
 	if (pknumatts_arg <= 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("number of key attributes must be > 0")));
+				 errmsg("number of key attributes must be > 0"),
+				 fmgr_call_errcontext(fcinfo, false)));
 
 	/* Allocate output array */
 	*pkattnums = (int *) palloc(pknumatts_arg * sizeof(int));
@@ -2435,7 +2385,8 @@ validate_pkattnums(Relation rel,
 		if (pkattnum <= 0 || pkattnum > natts)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid attribute number %d", pkattnum)));
+					 errmsg("invalid attribute number %d", pkattnum),
+					 fmgr_call_errcontext(fcinfo, false)));
 
 		/* Identify which physical column has this logical number */
 		lnum = 0;
@@ -2454,6 +2405,7 @@ validate_pkattnums(Relation rel,
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid attribute number %d", pkattnum)));
+					 errmsg("invalid attribute number %d", pkattnum),
+					 fmgr_call_errcontext(fcinfo, false)));
 	}
 }

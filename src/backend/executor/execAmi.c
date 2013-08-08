@@ -48,6 +48,7 @@
 #include "executor/nodeWindowAgg.h"
 #include "executor/nodeWorktablescan.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/memutils.h"		/* MemoryContextReset */
 #include "utils/syscache.h"
 
 
@@ -114,7 +115,7 @@ ExecReScan(PlanState *node)
 
 	/* Shut down any SRFs in the plan node's targetlist */
 	if (node->ps_ExprContext)
-		ReScanExprContext(node->ps_ExprContext);
+		ShutdownExprContext(node->ps_ExprContext, true);
 
 	/* And do node-type-specific processing */
 	switch (nodeTag(node))
@@ -246,6 +247,14 @@ ExecReScan(PlanState *node)
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
 			break;
+	}
+
+	/* Free per-tuple memory allocated by targetlist expressions. */
+	if (node->ps_ExprContext)
+	{
+		ResetExprContext(node->ps_ExprContext);
+		if (node->ps_ExprContext->projection_tuple_memory)
+			MemoryContextReset(node->ps_ExprContext->projection_tuple_memory);
 	}
 
 	if (node->chgParam != NULL)

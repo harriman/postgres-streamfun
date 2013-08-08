@@ -1691,40 +1691,23 @@ RemoveExtensionById(Oid extId)
 Datum
 pg_available_extensions(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	char	   *location;
 	DIR		   *dir;
 	struct dirent *de;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	tupdesc = CreateTemplateTupleDesc(3, false);
+	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "default_version", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 3, "comment", TEXTOID, -1, 0);
 
-	/* Build tuplestore to hold the result rows */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 	location = get_extension_control_directory();
 	dir = AllocateDir(location);
@@ -1781,10 +1764,6 @@ pg_available_extensions(PG_FUNCTION_ARGS)
 
 		FreeDir(dir);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 
@@ -1800,40 +1779,27 @@ pg_available_extensions(PG_FUNCTION_ARGS)
 Datum
 pg_available_extension_versions(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	char	   *location;
 	DIR		   *dir;
 	struct dirent *de;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	tupdesc = CreateTemplateTupleDesc(7, false);
+	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "version", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 3, "superuser", BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 4, "relocatable", BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 5, "schema", NAMEOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 6, "requires", NAMEARRAYOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 7, "comment", TEXTOID, -1, 0);
 
-	/* Build tuplestore to hold the result rows */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 	location = get_extension_control_directory();
 	dir = AllocateDir(location);
@@ -1873,10 +1839,6 @@ pg_available_extension_versions(PG_FUNCTION_ARGS)
 
 		FreeDir(dir);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 
@@ -1990,43 +1952,26 @@ Datum
 pg_extension_update_paths(PG_FUNCTION_ARGS)
 {
 	Name		extname = PG_GETARG_NAME(0);
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	List	   *evi_list;
 	ExtensionControlFile *control;
 	ListCell   *lc1;
 
-	/* Check extension name validity before any filesystem access */
-	check_valid_extension_name(NameStr(*extname));
-
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	tupdesc = CreateTemplateTupleDesc(3, false);
+	TupleDescInitEntry(tupdesc, 1, "source", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "target", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 3, "path", TEXTOID, -1, 0);
 
-	/* Build tuplestore to hold the result rows */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Check extension name validity before any filesystem access */
+	check_valid_extension_name(NameStr(*extname));
 
 	/* Read the extension's control file */
 	control = read_extension_control_file(NameStr(*extname));
@@ -2086,10 +2031,6 @@ pg_extension_update_paths(PG_FUNCTION_ARGS)
 			tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 
