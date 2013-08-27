@@ -1828,8 +1828,11 @@ WITH t AS (
 )
 SELECT * FROM t;
 NOTICE:  y_trigger: a = 21
+CONTEXT:  Trigger "y_trig" before insert "y" procedure y_trigger() 
 NOTICE:  y_trigger: a = 22
+CONTEXT:  Trigger "y_trig" before insert "y" procedure y_trigger() 
 NOTICE:  y_trigger: a = 23
+CONTEXT:  Trigger "y_trig" before insert "y" procedure y_trigger() 
  a  
 ----
  21
@@ -1868,8 +1871,11 @@ WITH t AS (
 )
 SELECT * FROM t LIMIT 1;
 NOTICE:  y_trigger: a = 31
+CONTEXT:  Trigger "y_trig" after insert "y" procedure y_trigger() 
 NOTICE:  y_trigger: a = 32
+CONTEXT:  Trigger "y_trig" after insert "y" procedure y_trigger() 
 NOTICE:  y_trigger: a = 33
+CONTEXT:  Trigger "y_trig" after insert "y" procedure y_trigger() 
  a  
 ----
  31
@@ -1915,6 +1921,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 NOTICE:  y_trigger
+CONTEXT:  Trigger "y_trig" after insert "y" procedure y_trigger() 
  a  
 ----
  41

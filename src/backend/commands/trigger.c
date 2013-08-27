@@ -82,6 +82,8 @@ static HeapTuple ExecCallTriggerFunc(TriggerData *trigdata,
 					FmgrInfo *finfo,
 					Instrumentation *instr,
 					MemoryContext per_tuple_context);
+static void TriggerFuncErrorCallback(void *trigdata);
+static int	trigger_func_errcontext(TriggerData *trigdata);
 static void AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 					  int event, bool row_trigger,
 					  HeapTuple oldtup, HeapTuple newtup,
@@ -1811,8 +1813,9 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 {
 	FunctionCallInfoData fcinfo;
 	PgStat_FunctionCallUsage fcusage;
-	Datum		result;
+	Datum		result = 0;
 	MemoryContext oldContext;
+	ErrorContextCallback error_context;
 
 	finfo += tgindx;
 
@@ -1850,6 +1853,20 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 	MyTriggerDepth++;
 	PG_TRY();
 	{
+		/*
+		 * Set up error reporting callback unless it's an internal trigger.
+		 */
+		if (!trigdata->tg_trigger->tgisinternal)
+		{
+			error_context.callback = TriggerFuncErrorCallback;
+			error_context.previous = error_context_stack;
+			error_context.arg = (void *) trigdata;
+			error_context_stack = &error_context;
+		}
+
+		/*
+		 * Call the function.
+		 */
 		result = FunctionCallInvoke(&fcinfo);
 	}
 	PG_CATCH();
@@ -1872,7 +1889,8 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("trigger function %u returned null value",
-						fcinfo.flinfo->fn_oid)));
+						fcinfo.flinfo->fn_oid),
+				 trigger_func_errcontext(trigdata)));
 
 	/*
 	 * If doing EXPLAIN ANALYZE, stop charging time to this trigger, and count
@@ -1882,6 +1900,87 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 		InstrStopNode(instr + tgindx, 1);
 
 	return (HeapTuple) DatumGetPointer(result);
+}
+
+/*
+ * Provide error context for trigger invocation
+ */
+static void
+TriggerFuncErrorCallback(void *trigdata)
+{
+	trigger_func_errcontext((TriggerData *) trigdata);
+}
+
+/*
+ * trigger_func_errcontext
+ *
+ * When calling ereport from a trigger function, this can be used to add some
+ * information to the error message to identify the trigger event.	Call
+ * another function, such as fmgr_call_errcontext, before this one to identify
+ * the function itself if desired.
+ */
+static int
+trigger_func_errcontext(TriggerData *trigdata)
+{
+	StringInfoData	 buf;
+	Relation		 rel;
+	Trigger			*trigger;
+	TriggerEvent	 trigevent;
+	const char		*s;
+
+	/* do nothing without trigger data */
+	if (!trigdata ||
+		!IsA(trigdata, TriggerData) ||
+		!trigdata->tg_trigger)
+		return 0;
+
+	initStringInfo(&buf);
+
+	rel = trigdata->tg_relation;
+	trigger = trigdata->tg_trigger;
+	trigevent = trigdata->tg_event;
+
+	if (trigger->tgname) 
+		appendStringInfo(&buf, "\"%s\" ", trigger->tgname);
+
+	s = TRIGGER_FIRED_BEFORE(trigevent) ? "before "
+	  : TRIGGER_FIRED_INSTEAD(trigevent) ? "instead of " 
+	  : TRIGGER_FIRED_AFTER(trigevent) ? "after "
+	  : "";
+	appendStringInfoString(&buf, s);
+
+	s = TRIGGER_FIRED_BY_DELETE(trigevent) ? "delete "
+	  : TRIGGER_FIRED_BY_INSERT(trigevent) ? "insert "
+	  : TRIGGER_FIRED_BY_UPDATE(trigevent) ? "update "
+	  : TRIGGER_FIRED_BY_TRUNCATE(trigevent) ? "truncate "
+	  : "";
+	appendStringInfoString(&buf, s);
+
+	/* relation name */
+	if (rel)
+	{
+		/* qualify the relation name if not visible in search path */
+		if (!RelationIsVisible(rel->rd_id))
+			appendStringInfo(&buf, "\"%s.%s\" ",
+							 get_namespace_name(RelationGetNamespace(rel)),
+							 RelationGetRelationName(rel));
+		else
+			appendStringInfo(&buf, "\"%s\" ", RelationGetRelationName(rel));
+	}
+
+	/* trigger function name */
+	if (trigger->tgfoid != InvalidOid)
+		appendStringInfo(&buf, "procedure %s ", 
+						 format_procedure(trigger->tgfoid));
+
+	/* 
+	 * The message will resemble the CREATE TRIGGER syntax... 
+	 * 
+	 * 'Context: Trigger "tgname" before insert on "relname" procedure f()'
+	 */
+	errcontext("Trigger %s", buf.data);
+
+	return 0;					/* return value does not matter */
 }
 
 void

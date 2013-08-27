@@ -99,207 +99,307 @@ FOR EACH STATEMENT EXECUTE PROCEDURE trigger_data(23,'skidoo');
 insert into trigger_test values(1,'insert');
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => INSERT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => STATEMENT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_stmt
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => INSERT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_before
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => INSERT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_after
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => AFTER
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after insert "trigger_test" procedure trigger_data() 
 update trigger_test set v = 'update' where i = 1;
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => UPDATE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => STATEMENT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_stmt
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => UPDATE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_before
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 1, 'v': 'update'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => UPDATE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_after
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 1, 'v': 'update'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => AFTER
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after update "trigger_test" procedure trigger_data() 
 delete from trigger_test;
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => DELETE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => STATEMENT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_stmt
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => DELETE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_before
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'update'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_before" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => DELETE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_after
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'update'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => AFTER
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_after" after delete "trigger_test" procedure trigger_data() 
 truncate table trigger_test;
 NOTICE:  TD[args] => ['23', 'skidoo']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[event] => TRUNCATE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[level] => STATEMENT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig_stmt
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 NOTICE:  TD[when] => BEFORE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig_stmt" before truncate "trigger_test" procedure trigger_data() 
 DROP TRIGGER show_trigger_data_trig_stmt on trigger_test;
 DROP TRIGGER show_trigger_data_trig_before on trigger_test;
 DROP TRIGGER show_trigger_data_trig_after on trigger_test;
@@ -311,66 +411,96 @@ FOR EACH ROW EXECUTE PROCEDURE trigger_data(24,'skidoo view');
 insert into trigger_test_view values(2,'insert');
 NOTICE:  TD[args] => ['24', 'skidoo view']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[event] => INSERT
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 2, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[old] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test_view
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[when] => INSTEAD OF
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 update trigger_test_view set v = 'update' where i = 1;
 NOTICE:  TD[args] => ['24', 'skidoo view']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[event] => UPDATE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[new] => {'i': 1, 'v': 'update'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test_view
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[when] => INSTEAD OF
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 delete from trigger_test_view;
 NOTICE:  TD[args] => ['24', 'skidoo view']
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[event] => DELETE
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[level] => ROW
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[name] => show_trigger_data_trig
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[new] => None
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[old] => {'i': 1, 'v': 'insert'}
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[relid] => bogus:12345
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_name] => trigger_test_view
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[table_schema] => public
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  TD[when] => INSTEAD OF
 CONTEXT:  PL/Python function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 DROP FUNCTION trigger_data() CASCADE;
 NOTICE:  drop cascades to trigger show_trigger_data_trig on view trigger_test_view
 DROP VIEW trigger_test_view;
@@ -391,6 +521,7 @@ INSERT INTO trigger_test VALUES (1, 'one');
 ERROR:  unexpected return value from trigger procedure
 DETAIL:  Expected None or a string.
 CONTEXT:  PL/Python function "stupid1"
+Trigger "stupid_trigger1" before insert "trigger_test" procedure stupid1() 
 DROP TRIGGER stupid_trigger1 ON trigger_test;
 -- returning MODIFY from DELETE trigger
 CREATE FUNCTION stupid2() RETURNS trigger
@@ -403,6 +534,7 @@ FOR EACH ROW EXECUTE PROCEDURE stupid2();
 DELETE FROM trigger_test WHERE i = 0;
 WARNING:  PL/Python trigger function returned "MODIFY" in a DELETE trigger -- ignored
 CONTEXT:  PL/Python function "stupid2"
+Trigger "stupid_trigger2" before delete "trigger_test" procedure stupid2() 
 DROP TRIGGER stupid_trigger2 ON trigger_test;
 INSERT INTO trigger_test VALUES (0, 'zero');
 -- returning unrecognized string from trigger function
@@ -417,6 +549,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  unexpected return value from trigger procedure
 DETAIL:  Expected None, "OK", "SKIP", or "MODIFY".
 CONTEXT:  PL/Python function "stupid3"
+Trigger "stupid_trigger3" before update "trigger_test" procedure stupid3() 
 DROP TRIGGER stupid_trigger3 ON trigger_test;
 -- Unicode variant
 CREATE FUNCTION stupid3u() RETURNS trigger
@@ -430,6 +563,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  unexpected return value from trigger procedure
 DETAIL:  Expected None, "OK", "SKIP", or "MODIFY".
 CONTEXT:  PL/Python function "stupid3u"
+Trigger "stupid_trigger3" before update "trigger_test" procedure stupid3u() 
 DROP TRIGGER stupid_trigger3 ON trigger_test;
 -- deleting the TD dictionary
 CREATE FUNCTION stupid4() RETURNS trigger
@@ -444,6 +578,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  TD["new"] deleted, cannot modify row
 CONTEXT:  while modifying trigger row
 PL/Python function "stupid4"
+Trigger "stupid_trigger4" before update "trigger_test" procedure stupid4() 
 DROP TRIGGER stupid_trigger4 ON trigger_test;
 -- TD not a dictionary
 CREATE FUNCTION stupid5() RETURNS trigger
@@ -458,6 +593,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  TD["new"] is not a dictionary
 CONTEXT:  while modifying trigger row
 PL/Python function "stupid5"
+Trigger "stupid_trigger5" before update "trigger_test" procedure stupid5() 
 DROP TRIGGER stupid_trigger5 ON trigger_test;
 -- TD not having string keys
 CREATE FUNCTION stupid6() RETURNS trigger
@@ -472,6 +608,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  TD["new"] dictionary key at ordinal position 0 is not a string
 CONTEXT:  while modifying trigger row
 PL/Python function "stupid6"
+Trigger "stupid_trigger6" before update "trigger_test" procedure stupid6() 
 DROP TRIGGER stupid_trigger6 ON trigger_test;
 -- TD keys not corresponding to row columns
 CREATE FUNCTION stupid7() RETURNS trigger
@@ -486,6 +623,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  key "a" found in TD["new"] does not exist as a column in the triggering row
 CONTEXT:  while modifying trigger row
 PL/Python function "stupid7"
+Trigger "stupid_trigger7" before update "trigger_test" procedure stupid7() 
 DROP TRIGGER stupid_trigger7 ON trigger_test;
 -- Unicode variant
 CREATE FUNCTION stupid7u() RETURNS trigger
@@ -500,6 +638,7 @@ UPDATE trigger_test SET v = 'null' WHERE i = 0;
 ERROR:  key "a" found in TD["new"] does not exist as a column in the triggering row
 CONTEXT:  while modifying trigger row
 PL/Python function "stupid7u"
+Trigger "stupid_trigger7" before update "trigger_test" procedure stupid7u() 
 DROP TRIGGER stupid_trigger7 ON trigger_test;
 -- calling a trigger function directly
 SELECT stupid7();

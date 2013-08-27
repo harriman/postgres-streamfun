@@ -63,74 +63,108 @@ FOR EACH ROW EXECUTE PROCEDURE trigger_data(23,'skidoo');
 insert into trigger_test values(1,'insert', '("(1)")');
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['23', 'skidoo']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'INSERT'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{new} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'insert'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'BEFORE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 update trigger_test set v = 'update' where i = 1;
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['23', 'skidoo']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'UPDATE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{new} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'update'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{old} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'insert'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'BEFORE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 delete from trigger_test;
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['23', 'skidoo']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'DELETE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{old} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'update'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'BEFORE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 DROP TRIGGER show_trigger_data_trig on trigger_test;
 insert into trigger_test values(1,'insert', '("(1)")');
 CREATE VIEW trigger_test_view AS SELECT * FROM trigger_test;
@@ -140,74 +174,108 @@ FOR EACH ROW EXECUTE PROCEDURE trigger_data(24,'skidoo view');
 insert into trigger_test_view values(2,'insert', '("(2)")');
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['24', 'skidoo view']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'INSERT'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{new} = {'foo' => {'rfoo' => {'i' => '2'}}, 'i' => '2', 'v' => 'insert'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'INSTEAD OF'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of insert "trigger_test_view" procedure trigger_data() 
 update trigger_test_view set v = 'update', foo = '("(3)")' where i = 1;
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['24', 'skidoo view']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'UPDATE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{new} = {'foo' => {'rfoo' => {'i' => '3'}}, 'i' => '1', 'v' => 'update'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{old} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'insert'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'INSTEAD OF'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of update "trigger_test_view" procedure trigger_data() 
 delete from trigger_test_view;
 NOTICE:  $_TD->{argc} = '2'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{args} = ['24', 'skidoo view']
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{event} = 'DELETE'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{level} = 'ROW'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{name} = 'show_trigger_data_trig'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{old} = {'foo' => {'rfoo' => {'i' => '1'}}, 'i' => '1', 'v' => 'insert'}
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relid} = 'bogus:12345'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{relname} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_name} = 'trigger_test_view'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{table_schema} = 'public'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 NOTICE:  $_TD->{when} = 'INSTEAD OF'
 CONTEXT:  PL/Perl function "trigger_data"
+Trigger "show_trigger_data_trig" instead of delete "trigger_test_view" procedure trigger_data() 
 DROP VIEW trigger_test_view;
 delete from trigger_test;
 DROP FUNCTION trigger_data();

@@ -70,6 +70,7 @@ insert into fkeys2 values (50, '5', 3);
 insert into fkeys2 values (70, '5', 3);
 ERROR:  tuple references non-existent key
 DETAIL:  Trigger "check_fkeys2_pkey_exist" found tuple referencing non-existent key in "pkeys".
+CONTEXT:  Trigger "check_fkeys2_pkey_exist" before insert "fkeys2" procedure check_primary_key() 
 insert into fkeys values (10, '1', 2);
 insert into fkeys values (30, '3', 3);
 insert into fkeys values (40, '4', 2);
@@ -78,24 +79,36 @@ insert into fkeys values (50, '5', 2);
 insert into fkeys values (70, '5', 1);
 ERROR:  tuple references non-existent key
 DETAIL:  Trigger "check_fkeys_pkey_exist" found tuple referencing non-existent key in "pkeys".
+CONTEXT:  Trigger "check_fkeys_pkey_exist" before insert "fkeys" procedure check_primary_key() 
 -- no key in fkeys2
 insert into fkeys values (60, '6', 4);
 ERROR:  tuple references non-existent key
 DETAIL:  Trigger "check_fkeys_pkey2_exist" found tuple referencing non-existent key in "fkeys2".
+CONTEXT:  Trigger "check_fkeys_pkey2_exist" before insert "fkeys" procedure check_primary_key() 
 delete from pkeys where pkey1 = 30 and pkey2 = '3';
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before delete "pkeys" procedure check_foreign_key() 
 ERROR:  "check_fkeys2_fkey_restrict": tuple is referenced in "fkeys"
-CONTEXT:  SQL statement "delete from fkeys2 where fkey21 = $1 and fkey22 = $2 "
+CONTEXT:  Trigger "check_fkeys2_fkey_restrict" before delete "fkeys2" procedure check_foreign_key() 
+SQL statement "delete from fkeys2 where fkey21 = $1 and fkey22 = $2 "
+Trigger "check_pkeys_fkey_cascade" before delete "pkeys" procedure check_foreign_key() 
 delete from pkeys where pkey1 = 40 and pkey2 = '4';
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before delete "pkeys" procedure check_foreign_key() 
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys2 are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before delete "pkeys" procedure check_foreign_key() 
 update pkeys set pkey1 = 7, pkey2 = '70' where pkey1 = 50 and pkey2 = '5';
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before update "pkeys" procedure check_foreign_key() 
 ERROR:  "check_fkeys2_fkey_restrict": tuple is referenced in "fkeys"
-CONTEXT:  SQL statement "delete from fkeys2 where fkey21 = $1 and fkey22 = $2 "
+CONTEXT:  Trigger "check_fkeys2_fkey_restrict" before delete "fkeys2" procedure check_foreign_key() 
+SQL statement "delete from fkeys2 where fkey21 = $1 and fkey22 = $2 "
+Trigger "check_pkeys_fkey_cascade" before update "pkeys" procedure check_foreign_key() 
 update pkeys set pkey1 = 7, pkey2 = '70' where pkey1 = 10 and pkey2 = '1';
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before update "pkeys" procedure check_foreign_key() 
 NOTICE:  check_pkeys_fkey_cascade: 1 tuple(s) of fkeys2 are deleted
+CONTEXT:  Trigger "check_pkeys_fkey_cascade" before update "pkeys" procedure check_foreign_key() 
 DROP TABLE pkeys;
 DROP TABLE fkeys;
 DROP TABLE fkeys2;
@@ -242,6 +255,7 @@ select set_ttdummy(1);
 -- we want to correct some "date"
 update tttest set price_on = -1 where price_id = 1;
 ERROR:  ttdummy (tttest): you cannot change price_on and/or price_off columns (use set_ttdummy)
+CONTEXT:  Trigger "ttdummy" before update "tttest" procedure ttdummy() 
 -- but this doesn't work
 -- try in this way
 select set_ttdummy(0);
@@ -295,20 +309,30 @@ CREATE TRIGGER after_upd_row_trig AFTER UPDATE ON main_table
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('after_upd_row');
 INSERT INTO main_table DEFAULT VALUES;
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
 UPDATE main_table SET a = a + 1 WHERE b < 30;
 NOTICE:  trigger_func(after_upd_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
 -- UPDATE that effects zero rows should still call per-statement trigger
 UPDATE main_table SET a = a + 2 WHERE b > 100;
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
 -- COPY should fire per-row and per-statement INSERT triggers
 COPY main_table (a, b) FROM stdin;
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
 SELECT * FROM main_table ORDER BY a, b;
  a  | b  
 ----+----
@@ -339,28 +363,48 @@ CREATE TRIGGER delete_when AFTER DELETE ON main_table
 FOR EACH STATEMENT WHEN (true) EXECUTE PROCEDURE trigger_func('delete_when');
 INSERT INTO main_table (a) VALUES (123), (456);
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(insert_when) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "insert_when" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(insert_a) called: action = INSERT, when = AFTER, level = ROW
+CONTEXT:  Trigger "insert_a" after insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
 COPY main_table FROM stdin;
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(insert_when) called: action = INSERT, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "insert_when" before insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(insert_a) called: action = INSERT, when = AFTER, level = ROW
+CONTEXT:  Trigger "insert_a" after insert "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
 DELETE FROM main_table WHERE a IN (123, 456);
 NOTICE:  trigger_func(delete_a) called: action = DELETE, when = AFTER, level = ROW
+CONTEXT:  Trigger "delete_a" after delete "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(delete_a) called: action = DELETE, when = AFTER, level = ROW
+CONTEXT:  Trigger "delete_a" after delete "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(delete_when) called: action = DELETE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "delete_when" after delete "main_table" procedure trigger_func() 
 UPDATE main_table SET a = 50, b = 60;
 NOTICE:  trigger_func(modified_any) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_any" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_any) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_any" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_a) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_a" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_a) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_a" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_a) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_a" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_a) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_a" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(modified_a) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "modified_a" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
 SELECT * FROM main_table ORDER BY a, b;
  a  | b  
 ----+----
@@ -418,34 +462,62 @@ SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = 'main_table'::regc
 
 UPDATE main_table SET a = 50;
 NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
+CONTEXT:  Trigger "before_upd_a_stmt_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
 UPDATE main_table SET b = 10;
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_b_stmt_trig" after update "main_table" procedure trigger_func() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
 --
 -- Test case for bug with BEFORE trigger followed by AFTER trigger with WHEN
 --
@@ -468,12 +540,17 @@ CREATE TRIGGER some_trig_afterb AFTER UPDATE ON some_t FOR EACH ROW
 INSERT INTO some_t VALUES (TRUE);
 UPDATE some_t SET some_col = TRUE;
 NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (t), new = (t)
+CONTEXT:  Trigger "some_trig_before" before update "some_t" procedure dummy_update_func() 
 UPDATE some_t SET some_col = FALSE;
 NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (t), new = (f)
+CONTEXT:  Trigger "some_trig_before" before update "some_t" procedure dummy_update_func() 
 NOTICE:  dummy_update_func(afterb) called: action = UPDATE, old = (t), new = (f)
+CONTEXT:  Trigger "some_trig_afterb" after update "some_t" procedure dummy_update_func() 
 UPDATE some_t SET some_col = TRUE;
 NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (f), new = (t)
+CONTEXT:  Trigger "some_trig_before" before update "some_t" procedure dummy_update_func() 
 NOTICE:  dummy_update_func(aftera) called: action = UPDATE, old = (f), new = (t)
+CONTEXT:  Trigger "some_trig_aftera" after update "some_t" procedure dummy_update_func() 
 DROP TABLE some_t;
 -- bogus cases
 CREATE TRIGGER error_upd_and_col BEFORE UPDATE OR UPDATE OF a ON main_table
@@ -548,23 +625,32 @@ create trigger trigtest_a_stmt_tg after insert or update or delete on trigtest
 for each statement execute procedure trigtest();
 insert into trigtest default values;
 NOTICE:  trigtest INSERT BEFORE STATEMENT
+CONTEXT:  Trigger "trigtest_b_stmt_tg" before insert "trigtest" procedure trigtest() 
 NOTICE:  trigtest INSERT BEFORE ROW
+CONTEXT:  Trigger "trigtest_b_row_tg" before insert "trigtest" procedure trigtest() 
 NOTICE:  trigtest INSERT AFTER ROW
+CONTEXT:  Trigger "trigtest_a_row_tg" after insert "trigtest" procedure trigtest() 
 NOTICE:  trigtest INSERT AFTER STATEMENT
+CONTEXT:  Trigger "trigtest_a_stmt_tg" after insert "trigtest" procedure trigtest() 
 alter table trigtest disable trigger trigtest_b_row_tg;
 insert into trigtest default values;
 NOTICE:  trigtest INSERT BEFORE STATEMENT
+CONTEXT:  Trigger "trigtest_b_stmt_tg" before insert "trigtest" procedure trigtest() 
 NOTICE:  trigtest INSERT AFTER ROW
+CONTEXT:  Trigger "trigtest_a_row_tg" after insert "trigtest" procedure trigtest() 
 NOTICE:  trigtest INSERT AFTER STATEMENT
+CONTEXT:  Trigger "trigtest_a_stmt_tg" after insert "trigtest" procedure trigtest() 
 alter table trigtest disable trigger user;
 insert into trigtest default values;
 alter table trigtest enable trigger trigtest_a_stmt_tg;
 insert into trigtest default values;
 NOTICE:  trigtest INSERT AFTER STATEMENT
+CONTEXT:  Trigger "trigtest_a_stmt_tg" after insert "trigtest" procedure trigtest() 
 insert into trigtest2 values(1);
 insert into trigtest2 values(2);
 delete from trigtest where i=2;
 NOTICE:  trigtest DELETE AFTER STATEMENT
+CONTEXT:  Trigger "trigtest_a_stmt_tg" after delete "trigtest" procedure trigtest() 
 select * from trigtest2;
  i 
 ---
@@ -652,41 +738,75 @@ BEFORE INSERT OR UPDATE OR DELETE ON trigger_test
 FOR EACH ROW EXECUTE PROCEDURE trigger_data(23,'skidoo');
 insert into trigger_test values(1,'insert');
 NOTICE:  TG_NAME: show_trigger_data_trig
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_WHEN: BEFORE
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_LEVEL: ROW
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_OP: INSERT
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELID::regclass: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELNAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_NAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_SCHEMA: public
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_NARGS: 2
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  TG_ARGV: [23, skidoo]
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 NOTICE:  NEW: (1,insert)
+CONTEXT:  Trigger "show_trigger_data_trig" before insert "trigger_test" procedure trigger_data() 
 update trigger_test set v = 'update' where i = 1;
 NOTICE:  TG_NAME: show_trigger_data_trig
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_WHEN: BEFORE
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_LEVEL: ROW
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_OP: UPDATE
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELID::regclass: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELNAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_NAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_SCHEMA: public
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_NARGS: 2
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  TG_ARGV: [23, skidoo]
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  OLD: (1,insert)
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 NOTICE:  NEW: (1,update)
+CONTEXT:  Trigger "show_trigger_data_trig" before update "trigger_test" procedure trigger_data() 
 delete from trigger_test;
 NOTICE:  TG_NAME: show_trigger_data_trig
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_WHEN: BEFORE
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_LEVEL: ROW
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_OP: DELETE
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELID::regclass: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_RELNAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_NAME: trigger_test
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_TABLE_SCHEMA: public
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_NARGS: 2
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  TG_ARGV: [23, skidoo]
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 NOTICE:  OLD: (1,update)
+CONTEXT:  Trigger "show_trigger_data_trig" before delete "trigger_test" procedure trigger_data() 
 DROP TRIGGER show_trigger_data_trig on trigger_test;
 DROP FUNCTION trigger_data();
 DROP TABLE trigger_test;
@@ -711,14 +831,20 @@ INSERT INTO trigger_test VALUES(1, 'foo', 'bar');
 INSERT INTO trigger_test VALUES(2, 'baz', 'quux');
 UPDATE trigger_test SET f3 = 'bar';
 NOTICE:  row 1 not changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 UPDATE trigger_test SET f3 = NULL;
 NOTICE:  row 1 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 -- this demonstrates that the above isn't really working as desired:
 UPDATE trigger_test SET f3 = NULL;
 NOTICE:  row 1 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 -- the right way when considering nulls is
 CREATE OR REPLACE FUNCTION mytrigger() RETURNS trigger LANGUAGE plpgsql as $$
 begin
@@ -731,13 +857,19 @@ begin
 end$$;
 UPDATE trigger_test SET f3 = 'bar';
 NOTICE:  row 1 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 UPDATE trigger_test SET f3 = NULL;
 NOTICE:  row 1 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 UPDATE trigger_test SET f3 = NULL;
 NOTICE:  row 1 not changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 NOTICE:  row 2 not changed
+CONTEXT:  Trigger "t" before update "trigger_test" procedure mytrigger() 
 DROP TABLE trigger_test;
 DROP FUNCTION mytrigger();
 -- Test snapshot management in serializable transactions involving triggers
@@ -961,27 +1093,43 @@ FOR EACH STATEMENT EXECUTE PROCEDURE view_trigger('after_view_del_stmt');
 -- Insert into view using trigger
 INSERT INTO main_view VALUES (20, 30);
 NOTICE:  main_view BEFORE INSERT STATEMENT (before_view_ins_stmt)
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF INSERT ROW (instead_of_ins)
+CONTEXT:  Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  NEW: (20,30)
+CONTEXT:  Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
+SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
 PL/pgSQL function view_trigger() line 17 at SQL statement
+Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
+SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
 PL/pgSQL function view_trigger() line 17 at SQL statement
+Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER INSERT STATEMENT (after_view_ins_stmt)
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_view" procedure view_trigger() 
 INSERT 0 1
 INSERT INTO main_view VALUES (21, 31) RETURNING a, b;
 NOTICE:  main_view BEFORE INSERT STATEMENT (before_view_ins_stmt)
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF INSERT ROW (instead_of_ins)
+CONTEXT:  Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  NEW: (21,31)
+CONTEXT:  Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
+CONTEXT:  Trigger "before_ins_stmt_trig" before insert "main_table" procedure trigger_func() 
+SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
 PL/pgSQL function view_trigger() line 17 at SQL statement
+Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_table" procedure trigger_func() 
+SQL statement "INSERT INTO main_table VALUES (NEW.a, NEW.b)"
 PL/pgSQL function view_trigger() line 17 at SQL statement
+Trigger "instead_of_insert_trig" instead of insert "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER INSERT STATEMENT (after_view_ins_stmt)
+CONTEXT:  Trigger "after_ins_stmt_trig" after insert "main_view" procedure view_trigger() 
  a  | b  
 ----+----
  21 | 31
@@ -991,39 +1139,63 @@ INSERT 0 1
 -- Table trigger will prevent updates
 UPDATE main_view SET b = 31 WHERE a = 20;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
+CONTEXT:  Trigger "before_upd_stmt_trig" before update "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  OLD: (20,30), NEW: (20,31)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_stmt_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_view" procedure view_trigger() 
 UPDATE 0
 UPDATE main_view SET b = 32 WHERE a = 21 AND b = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
+CONTEXT:  Trigger "before_upd_stmt_trig" before update "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  OLD: (21,31), NEW: (21,32)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_stmt_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_row) called: action = UPDATE, when = BEFORE, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_row_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_view" procedure view_trigger() 
  a | b 
 ---+---
 (0 rows)
@@ -1034,45 +1206,73 @@ DROP TRIGGER before_upd_a_row_trig ON main_table;
 DROP TRIGGER
 UPDATE main_view SET b = 31 WHERE a = 20;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
+CONTEXT:  Trigger "before_upd_stmt_trig" before update "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  OLD: (20,30), NEW: (20,31)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_stmt_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_view" procedure view_trigger() 
 UPDATE 1
 UPDATE main_view SET b = 32 WHERE a = 21 AND b = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
+CONTEXT:  Trigger "before_upd_stmt_trig" before update "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  OLD: (21,31), NEW: (21,32)
+CONTEXT:  Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "before_upd_a_stmt_trig" before update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_a_b_row_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_row_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_b_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_table" procedure trigger_func() 
+SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
 PL/pgSQL function view_trigger() line 23 at SQL statement
+Trigger "instead_of_update_trig" instead of update "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_view" procedure view_trigger() 
  a  | b  
 ----+----
  21 | 32
@@ -1082,24 +1282,38 @@ UPDATE 1
 -- Before and after stmt triggers should fire even when no rows are affected
 UPDATE main_view SET b = 0 WHERE false;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
+CONTEXT:  Trigger "before_upd_stmt_trig" before update "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+CONTEXT:  Trigger "after_upd_stmt_trig" after update "main_view" procedure view_trigger() 
 UPDATE 0
 -- Delete from view using trigger
 DELETE FROM main_view WHERE a IN (20,21);
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
+CONTEXT:  Trigger "before_del_stmt_trig" before delete "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  OLD: (21,10)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  OLD: (20,31)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  OLD: (21,32)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
+CONTEXT:  Trigger "after_del_stmt_trig" after delete "main_view" procedure view_trigger() 
 DELETE 3
 DELETE FROM main_view WHERE a = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
+CONTEXT:  Trigger "before_del_stmt_trig" before delete "main_view" procedure view_trigger() 
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  OLD: (31,10)
+CONTEXT:  Trigger "instead_of_delete_trig" instead of delete "main_view" procedure view_trigger() 
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
+CONTEXT:  Trigger "after_del_stmt_trig" after delete "main_view" procedure view_trigger() 
  a  | b  
 ----+----
  31 | 10
@@ -1287,6 +1501,7 @@ INSERT 0 1
 -- UPDATE .. RETURNING
 UPDATE city_view SET country_name = 'Japon' WHERE city_name = 'Tokyo'; -- error
 ERROR:  No such country: "Japon"
+CONTEXT:  Trigger "city_update_trig" instead of update "city_view" procedure city_update() 
 UPDATE city_view SET country_name = 'Japan' WHERE city_name = 'Takyo'; -- no match
 UPDATE 0
 UPDATE city_view SET country_name = 'Japan' WHERE city_name = 'Tokyo' RETURNING *; -- OK
@@ -1501,30 +1716,46 @@ select pg_trigger_depth();
 
 insert into depth_a values (1);
 NOTICE:  depth_a_tr: depth = 1
+CONTEXT:  Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_b_tr: depth = 2
-CONTEXT:  SQL statement "insert into depth_b values (new.id)"
+CONTEXT:  Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
+SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_c_tr: depth = 3
-CONTEXT:  SQL statement "insert into depth_c values (1)"
+CONTEXT:  Trigger "depth_c_tr" before insert "depth_c" procedure depth_c_tf() 
+SQL statement "insert into depth_c values (1)"
 PL/pgSQL function depth_b_tf() line 5 at EXECUTE statement
+Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
 SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  SQLSTATE = U9999: depth = 2
-CONTEXT:  SQL statement "insert into depth_b values (new.id)"
+CONTEXT:  Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
+SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_b_tr: depth = 2
-CONTEXT:  SQL statement "insert into depth_b values (new.id)"
+CONTEXT:  Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
+SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_c_tr: depth = 3
-CONTEXT:  SQL statement "insert into depth_c values (1)"
+CONTEXT:  Trigger "depth_c_tr" before insert "depth_c" procedure depth_c_tf() 
+SQL statement "insert into depth_c values (1)"
 PL/pgSQL function depth_b_tf() line 12 at EXECUTE statement
+Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
 SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 ERROR:  U9999
-CONTEXT:  SQL statement "insert into depth_c values (1)"
+CONTEXT:  Trigger "depth_c_tr" before insert "depth_c" procedure depth_c_tf() 
+SQL statement "insert into depth_c values (1)"
 PL/pgSQL function depth_b_tf() line 12 at EXECUTE statement
+Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
 SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 select pg_trigger_depth();
  pg_trigger_depth 
 ------------------
@@ -1533,23 +1764,35 @@ select pg_trigger_depth();
 
 insert into depth_a values (2);
 NOTICE:  depth_a_tr: depth = 1
+CONTEXT:  Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_b_tr: depth = 2
-CONTEXT:  SQL statement "insert into depth_b values (new.id)"
-PL/pgSQL function depth_a_tf() line 4 at SQL statement
-NOTICE:  depth_c_tr: depth = 3
-CONTEXT:  SQL statement "insert into depth_c values (2)"
-PL/pgSQL function depth_b_tf() line 5 at EXECUTE statement
+CONTEXT:  Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
 SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_c_tr: depth = 3
-CONTEXT:  SQL statement "insert into depth_c values (2)"
+CONTEXT:  Trigger "depth_c_tr" before insert "depth_c" procedure depth_c_tf() 
+SQL statement "insert into depth_c values (2)"
 PL/pgSQL function depth_b_tf() line 5 at EXECUTE statement
+Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
 SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
-NOTICE:  depth_b_tr: depth = 2
-CONTEXT:  SQL statement "insert into depth_b values (new.id)"
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
+NOTICE:  depth_c_tr: depth = 3
+CONTEXT:  Trigger "depth_c_tr" before insert "depth_c" procedure depth_c_tf() 
+SQL statement "insert into depth_c values (2)"
+PL/pgSQL function depth_b_tf() line 5 at EXECUTE statement
+Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
+SQL statement "insert into depth_b values (new.id)"
 PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
+NOTICE:  depth_b_tr: depth = 2
+CONTEXT:  Trigger "depth_b_tr" before insert "depth_b" procedure depth_b_tf() 
+SQL statement "insert into depth_b values (new.id)"
+PL/pgSQL function depth_a_tf() line 4 at SQL statement
+Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 NOTICE:  depth_a_tr: depth = 1
+CONTEXT:  Trigger "depth_a_tr" before insert "depth_a" procedure depth_a_tf() 
 select pg_trigger_depth();
  pg_trigger_depth 
 ------------------
