@@ -938,15 +938,7 @@ hstore_svals(PG_FUNCTION_ARGS)
 		HEntry	   *entries = ARRPTR(hs);
 
 		if (HS_VALISNULL(entries, i))
-		{
-			ReturnSetInfo *rsi;
-
-			/* ugly ugly ugly. why no macro for this? */
-			(funcctx)->call_cntr++;
-			rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-			rsi->isDone = ExprMultipleResult;
-			PG_RETURN_NULL();
-		}
+			SRF_RETURN_NEXT_NULL(funcctx);
 		else
 		{
 			text	   *item;

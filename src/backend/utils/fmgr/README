@@ -128,12 +128,10 @@ always check the node type before assuming it knows what kind of context is
 being passed.)  fmgr itself puts no other restrictions on the use of this
 field.
 
-resultinfo is NULL when calling any function from which a simple Datum
-result is expected.  It may point to some subtype of Node if the function
-returns more than a Datum.  (For example, resultinfo is used when calling a
-function that returns a set, as discussed below.)  Like the context field,
-resultinfo is a hook for expansion; fmgr itself doesn't constrain the use
-of the field.
+resultinfo, at present, points to a ReturnSetInfo struct (on every call via
+the expression evaluator), or is NULL (on direct calls that bypass ordinary
+expression evaluation; although direct callers too could supply ReturnSetInfo
+if they consider it useful).
 
 fncollation is the input collation derived by the parser, or InvalidOid
 when there are no inputs of collatable types or they don't share a common
@@ -389,19 +387,21 @@ Functions Accepting or Returning Sets
 -------------------------------------
 
 [ this section revised 29-Aug-2002 for 7.3 ]
+[ revised again for streaming set-returning function enhancement ]
 
-If a function is marked in pg_proc as returning a set, then it is called
-with fcinfo->resultinfo pointing to a node of type ReturnSetInfo.  A
-function that desires to return a set should raise an error "called in
-context that does not accept a set result" if resultinfo is NULL or does
-not point to a ReturnSetInfo node.
+When a function is called via the expression evaluator (as opposed to direct
+calls bypassing the expression evaluator), its fcinfo->resultinfo points to a
+node of type ReturnSetInfo.  A function that desires to return a set should
+raise an error "called in context that does not accept a set result" if
+resultinfo is NULL or does not point to a ReturnSetInfo node.
 
 There are currently two modes in which a function can return a set result:
 value-per-call, or materialize.  In value-per-call mode, the function returns
 one value each time it is called, and finally reports "done" when it has no
-more values to return.  In materialize mode, the function's output set is
-instantiated in a Tuplestore object; all the values are returned in one call.
-Additional modes might be added in future.
+more values to return.  In materialize mode, the function appends its result
+values to a Tuplestore object; the whole set of values can be returned in one
+call, or built up incrementally over a series of calls.  Additional modes
+might be added in future.
 
 ReturnSetInfo contains a field "allowedModes" which is set (by the caller)
 to a bitmask that's the OR of the modes the caller can support.  The actual
@@ -409,49 +409,170 @@ mode used by the function is returned in another field "returnMode".  For
 backwards-compatibility reasons, returnMode is initialized to value-per-call
 and need only be changed if the function wants to use a different mode.
 The function should ereport() if it cannot use any of the modes the caller is
-willing to support.
+willing to support.  If a function is marked in pg_proc as returning a set,
+and its caller supports the set-returning protocol, allowedModes initially
+indicates that the function may choose either value-per-call or materialize
+mode.  The function must decide on a mode before returning its first nonempty
+result; thereafter it must continue using the same mode.
+
+                          Value-per-call mode
 
 Value-per-call mode works like this: ReturnSetInfo contains a field
 "isDone", which should be set to one of these values:
 
-    ExprSingleResult             /* expression does not return a set */
-    ExprMultipleResult           /* this result is an element of a set */
-    ExprEndResult                /* there are no more elements in the set */
+    ExprSingleResult    /* returning the final item of the current set; next
+                             call will begin a new set with fresh arguments */
+    ExprMultipleResult  /* returning an item of the current set; next call
+                             will keep same arguments and continue same set */
+    ExprEndResult       /* returning nothing; current set has been exhausted;
+                             the return value and isNull flag are ignored;
+                             next call will begin a new set with fresh args */
 
 (the caller will initialize it to ExprSingleResult).  If the function simply
-returns a Datum without touching ReturnSetInfo, then the call is over and a
-single-item set has been returned.  To return a set, the function must set
-isDone to ExprMultipleResult for each set element.  After all elements have
-been returned, the next call should set isDone to ExprEndResult and return a
-null result.  (Note it is possible to return an empty set by doing this on
-the first call.)
+returns a value (or a null) without touching ReturnSetInfo, then the call is
+over and a single-item set has been returned.  To yield an empty set, the
+function must set isDone = ExprEndResult and return 0.
 
-The ReturnSetInfo node also contains a link to the ExprContext within which
-the function is being evaluated.  This is useful for value-per-call functions
-that need to close down internal state when they are not run to completion:
-they can register a shutdown callback function in the ExprContext.
+To yield a result set of at least one item, the function assigns isDone =
+ExprMultipleResult and returns the first item.  The caller then calls again
+without changing the arguments, and with isDone still == ExprMultipleResult;
+then the function can continue delivering the set by returning its next item.
+The function signals the end of the set in either of two ways: either it must
+set isDone = ExprSingleResult when returning the final value; or when there
+is nothing more to return, it must set isDone = ExprEndResult and return 0.
+After the function has finished producing a set, the caller may call again
+with fresh arguments and with isDone == ExprSingleResult, to begin a new set.
 
-Materialize mode works like this: the function creates a Tuplestore holding
-the (possibly empty) result set, and returns it.  There are no multiple calls.
-The function must also return a TupleDesc that indicates the tuple structure.
-The Tuplestore and TupleDesc should be created in the context
-econtext->ecxt_per_query_memory (note this will *not* be the context the
-function is called in).  The function stores pointers to the Tuplestore and
-TupleDesc into ReturnSetInfo, sets returnMode to indicate materialize mode,
-and returns null.  isDone is not used and should be left at ExprSingleResult.
+                            Materialize Mode
 
-The Tuplestore must be created with randomAccess = true if
-SFRM_Materialize_Random is set in allowedModes, but it can (and preferably
-should) be created with randomAccess = false if not.  Callers that can support
+Materialize mode works like this:  After one-time initialization (described
+below), on each call the function yields either a complete or partial result
+set, by appending zero or more tuples to the tuplestore, setting the "isDone"
+field if necessary, and returning.  The function should always return 0 when
+using Materialize mode, and should not set fcinfo->isnull (it is ignored).
+
+To return a complete result set in one call, the function appends all of the
+values - zero or more of them - to the tuplestore, and returns, leaving
+isDone == ExprSingleResult (the default).
+
+To return a partial result set, the function appends zero or more values to
+the tuplestore, sets isDone = ExprMultipleResult, and returns.  If at least
+one value was appended, the caller then calls again without changing the
+arguments, and with isDone still == ExprMultipleResult; then the function can
+continue as before to deliver more of the result set.  The function signals
+the end of the set in either of two ways: either by returning without
+appending any additional tuples; or by appending the final instalment of
+zero or more tuples and setting isDone = ExprSingleResult before returning.
+
+After the function has finished producing a set, the caller may call again
+with fresh arguments and with isDone == ExprSingleResult, to begin a new set.
+
+To append result values, the function should call tuplestore_putvalues(),
+tuplestore_puttuple(), or tuplestore_puttupleslot().  The function should not
+clear or trim the tuplestore, nor reposition its read pointer or eof state.
+
+One-time initialization is required before returning results in Materialize
+mode.  The function creates a Tuplestore or uses one provided by the caller;
+sets up a tuple descriptor to specify the layout of its result tuples; and
+sets returnMode = SFRM_Materialize.  The tuplestore should be created in the
+econtext->ecxt_per_query_memory context (note this will *not* be the context
+the function is called in), and the pointer is kept in the "setResult" field
+of ReturnSetInfo.  The tuplestore must be created with randomAccess = true if
+SFRM_Materialize_Random is set in allowedModes.  Callers that can support
 both ValuePerCall and Materialize mode will set SFRM_Materialize_Preferred,
-or not, depending on which mode they prefer.
+or not, depending on which mode they prefer.  (At present, both modes are
+always supported, and SFRM_Materialize_Preferred is never set.)
 
-If available, the expected tuple descriptor is passed in ReturnSetInfo;
-in other contexts the expectedDesc field will be NULL.  The function need
-not pay attention to expectedDesc, but it may be useful in special cases.
+To commence Materialize mode and obtain a tuplestore, it is recommended that
+you use the srf_init_materialize_mode() convenience function declared in
+src/include/funcapi.h, and call the srf_verify_expected_tupdesc() function to
+verify that your result tuples are laid out correctly as the caller requires.
+
+                        Miscellaneous SRF notes
+
+NB: The isDone options (Single/Multiple/End) have considerably different
+significance in the set-returning function interface which we have just
+described, in contrast with their significance for callers of the expression
+evaluator.  To callers, for a non-set-valued expression, the ExecEvalExpr
+interface gives back ExprSingleResult along with the (possibly null) singleton
+return value.  For a set-valued expression, over a series of calls,
+ExecEvalExpr gives back zero or more occurrences of ExprMultipleResult along
+with a single (possibly null) return value per call; followed by ExprEndResult
+along with a null, upon the final call when the set has been exhausted.  The
+ExecEvalExpr interface is simple for callers, while the set-returning function
+interface is flexible and convenient for function implementors.
 
 There is no support for functions accepting sets; instead, the function will
 be called multiple times, once for each element of the input set.
+
+
+Expected result tuple descriptor
+--------------------------------
+
+For set-returning functions, and functions returning a RECORD or row type,
+the caller usually builds an expected result tuple descriptor, which is
+passed to the function in the "expectedDesc" field of ReturnSetInfo.  (For
+functions that use Materialize mode to return a set of a non-row type, each
+value has to be wrapped in a single-column tuple in order to be stored in
+the tuplestore, and the expectedDesc is set up to describe this expected
+format.)
+
+Function need not look at the expectedDesc unless they wish to vary their
+result tuple format accordingly.  Such functions are defined to return
+RECORD or SETOF RECORD without any INOUT or OUT parameters, and called as
+table functions in the FROM clause.  The user specifies the desired result
+column names and data types explicitly in the query syntax, something like:
+"SELECT ... FROM f(args) [AS] alias(colname, coltype, ...)"  The function can
+use the expectedDesc to construct its result tuples, or it can set up its own
+result tuple descriptor with reference to the column names and types in the
+expectedDesc; the TupleDescGetAttInMetadata() function is often useful here.
+
+When the function yields tuples or sets of tuples, the tuple format is
+required to be binary-compatible with the expectedDesc if provided.  This is
+checked automatically for set-returning functions using value-per-call mode,
+but other functions should call srf_verify_expected_tupdesc(), passing their
+actual result tuple descriptor, to check for compatibility with the
+expectedDesc.
+
+
+Function cleanup callback at end of query
+-----------------------------------------
+
+The ReturnSetInfo node contains a link to the ExprContext within which the
+function is being evaluated.  This can be useful for set-returning functions
+that need to register a "shutdown callback" function to close down internal
+state when they are not run to completion, such as when retrieval is ended by
+a LIMIT clause or by the client before all the results have been generated.
+See the RegisterExprContextCallback() function in executor/execUtils.c.
+
+The ReturnSetInfo node is provided also to non-set-returning functions so
+they too can register shutdown callbacks for cleanup at the end of execution.
+
+(Note that these expression shutdown callbacks aren't called when execution
+is terminated by an error or otherwise ends abnormally.  Peculiarly, the term
+"shutdown" here doesn't refer to PostgreSQL server shutdown, but only to the
+normal completion of a query, or when a scan is reset to begin producing the
+same results again.)
+
+
+Adding context information to error messages
+--------------------------------------------
+
+It is sometimes helpful to provide additional context information when using
+ereport() to report an error.  The user sometimes needs help to figure out
+which part of an SQL command caused an error, or which function was actually
+called, particularly where functions are overloaded, invoked implicitly via
+operators or overridden via the search path.  Within an ereport parameter
+list, you can call fmgr_call_errcontext() to add a "Context:" line to the
+message to show the SQL function signature, operator, etc.  Example:
+        ereport(ERROR, (errmsg("invalid attribute number %d", attnum),
+                        fmgr_call_errcontext(fcinfo, false)));
+        ERROR:  invalid attribute number 4
+        CONTEXT:  function "foo(text,int2vector,integer[])"
+For errors likely to be encountered while trying to install or troubleshoot
+an extension, such as somehow loading the wrong version of its library or
+misconfigured catalog definitions, you can make the second argument "true" to
+display the actual dynamic library path name and entry point.
 
 
 Notes About Function Handlers

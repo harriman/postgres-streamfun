@@ -913,9 +913,11 @@ $$ select (1, 2) $$ language sql;
 select * from foobar();  -- fail
 ERROR:  function return row and query-specified return row do not match
 DETAIL:  Returned type integer at ordinal position 2, but query expects numeric.
+CONTEXT:  Function "foobar()"
 create or replace function foobar(out integer, out numeric) as
 $$ select (1, 2.1, 3) $$ language sql;
 select * from foobar();  -- fail
 ERROR:  function return row and query-specified return row do not match
 DETAIL:  Returned row contains 3 attributes, but query expects 2.
+CONTEXT:  Function "foobar()"
 drop function foobar();

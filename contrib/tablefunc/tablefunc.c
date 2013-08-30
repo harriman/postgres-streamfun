@@ -44,17 +44,16 @@
 
 PG_MODULE_MAGIC;
 
-static HTAB *load_categories_hash(char *cats_sql, MemoryContext per_query_ctx);
-static Tuplestorestate *get_crosstab_tuplestore(char *sql,
+static HTAB *load_categories_hash(char *cats_sql);
+static void get_crosstab_tuplestore(char *sql,
 						HTAB *crosstab_hash,
 						TupleDesc tupdesc,
-						MemoryContext per_query_ctx,
-						bool randomAccess);
+						Tuplestorestate *tupstore);
 static void validateConnectbyTupleDesc(TupleDesc tupdesc, bool show_branch, bool show_serial);
 static bool compatCrosstabTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 static bool compatConnectbyTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 static void get_normal_pair(float8 *x1, float8 *x2);
-static Tuplestorestate *connectby(char *relname,
+static void connectby(char *relname,
 		  char *key_fld,
 		  char *parent_key_fld,
 		  char *orderby_fld,
@@ -63,10 +62,9 @@ static Tuplestorestate *connectby(char *relname,
 		  int max_depth,
 		  bool show_branch,
 		  bool show_serial,
-		  MemoryContext per_query_ctx,
-		  bool randomAccess,
-		  AttInMetadata *attinmeta);
-static Tuplestorestate *build_tuplestore_recursively(char *key_fld,
+		  AttInMetadata *attinmeta,
+		  Tuplestorestate *tupstore);
+static void build_tuplestore_recursively(char *key_fld,
 							 char *parent_key_fld,
 							 char *relname,
 							 char *orderby_fld,
@@ -78,7 +76,6 @@ static Tuplestorestate *build_tuplestore_recursively(char *key_fld,
 							 int max_depth,
 							 bool show_branch,
 							 bool show_serial,
-							 MemoryContext per_query_ctx,
 							 AttInMetadata *attinmeta,
 							 Tuplestorestate *tupstore);
 
@@ -347,7 +344,6 @@ Datum
 crosstab(PG_FUNCTION_ARGS)
 {
 	char	   *sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Tuplestorestate *tupstore;
 	TupleDesc	tupdesc;
 	int			call_cntr;
@@ -359,23 +355,14 @@ crosstab(PG_FUNCTION_ARGS)
 	char	   *lastrowid;
 	int			i;
 	int			num_categories;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	int			ret;
 	int			proc;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	/* Caller should have provided a tuple descriptor for our result type. */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	/* Connect to SPI manager */
 	if ((ret = SPI_connect()) < 0)
@@ -390,8 +377,7 @@ crosstab(PG_FUNCTION_ARGS)
 	if (ret != SPI_OK_SELECT || proc <= 0)
 	{
 		SPI_finish();
-		rsinfo->isDone = ExprEndResult;
-		PG_RETURN_NULL();
+		return (Datum) 0;
 	}
 
 	spi_tuptable = SPI_tuptable;
@@ -415,25 +401,6 @@ crosstab(PG_FUNCTION_ARGS)
 				 errdetail("The provided SQL must return 3 "
 						   "columns: rowid, category, and values.")));
 
-	/* get a tuple descriptor for our result type */
-	switch (get_call_result_type(fcinfo, NULL, &tupdesc))
-	{
-		case TYPEFUNC_COMPOSITE:
-			/* success */
-			break;
-		case TYPEFUNC_RECORD:
-			/* failed to determine actual type of RECORD */
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("function returning record called in context "
-							"that cannot accept type record")));
-			break;
-		default:
-			/* result type isn't composite */
-			elog(ERROR, "return type must be a row type");
-			break;
-	}
-
 	/*
 	 * Check that return tupdesc is compatible with the data we got from SPI,
 	 * at least based on number and type of attributes
@@ -443,21 +410,6 @@ crosstab(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("return and sql tuple descriptions are " \
 						"incompatible")));
-
-	/*
-	 * switch to long-lived memory context
-	 */
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* make sure we have a persistent copy of the result tupdesc */
-	tupdesc = CreateTupleDescCopy(tupdesc);
-
-	/* initialize our tuplestore in long-lived context */
-	tupstore =
-		tuplestore_begin_heap(rsinfo->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	MemoryContextSwitchTo(oldcontext);
 
 	/*
 	 * Generate attribute metadata needed later to produce tuples from raw C
@@ -580,11 +532,6 @@ crosstab(PG_FUNCTION_ARGS)
 		pfree(values);
 	}
 
-	/* let the caller know we're sending back a tuplestore */
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
 	/* release SPI related resources (and return to caller's context) */
 	SPI_finish();
 
@@ -632,29 +579,18 @@ crosstab_hash(PG_FUNCTION_ARGS)
 {
 	char	   *sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	char	   *cats_sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	Tuplestorestate *tupstore;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	HTAB	   *crosstab_hash;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* get the requested return tuple description */
-	tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
+	/* Caller should have provided a tuple descriptor for our result type. */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	/*
 	 * Check to make sure we have a reasonable tuple descriptor
@@ -669,29 +605,20 @@ crosstab_hash(PG_FUNCTION_ARGS)
 				 errmsg("query-specified return tuple and " \
 						"crosstab function are not compatible")));
 
-	/* load up the categories hash table */
-	crosstab_hash = load_categories_hash(cats_sql, per_query_ctx);
+	/* Switch to a long-lived memory context to create the hash table. */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
-	/* let the caller know we're sending back a tuplestore */
-	rsinfo->returnMode = SFRM_Materialize;
+	/* load up the categories hash table */
+	crosstab_hash = load_categories_hash(cats_sql);
 
 	/* now go build it */
-	rsinfo->setResult = get_crosstab_tuplestore(sql,
-												crosstab_hash,
-												tupdesc,
-												per_query_ctx,
-							 rsinfo->allowedModes & SFRM_Materialize_Random);
+	get_crosstab_tuplestore(sql,
+							crosstab_hash,
+							tupdesc,
+							tupstore);
 
-	/*
-	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual
-	 * tuples are in our tuplestore and passed back through rsinfo->setResult.
-	 * rsinfo->setDesc is set to the tuple description that we actually used
-	 * to build our tuples with, so the caller can verify we did what it was
-	 * expecting.
-	 */
-	rsinfo->setDesc = tupdesc;
 	MemoryContextSwitchTo(oldcontext);
-
 	return (Datum) 0;
 }
 
@@ -699,7 +626,7 @@ crosstab_hash(PG_FUNCTION_ARGS)
  * load up the categories hash table
  */
 static HTAB *
-load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
+load_categories_hash(char *cats_sql)
 {
 	HTAB	   *crosstab_hash;
 	HASHCTL		ctl;
@@ -711,7 +638,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAX_CATNAME_LEN;
 	ctl.entrysize = sizeof(crosstab_HashEnt);
-	ctl.hcxt = per_query_ctx;
+	ctl.hcxt = CurrentMemoryContext;
 
 	/*
 	 * use INIT_CATS, defined above as a guess of how many hash table entries
@@ -760,7 +687,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 			/* get the category from the current sql result tuple */
 			catname = SPI_getvalue(spi_tuple, spi_tupdesc, 1);
 
-			SPIcontext = MemoryContextSwitchTo(per_query_ctx);
+			SPIcontext = MemoryContextSwitchTo(ctl.hcxt);
 
 			catdesc = (crosstab_cat_desc *) palloc(sizeof(crosstab_cat_desc));
 			catdesc->catname = catname;
@@ -781,25 +708,20 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 }
 
 /*
- * create and populate the crosstab tuplestore using the provided source query
+ * populate the crosstab tuplestore using the provided source query
  */
-static Tuplestorestate *
+static void
 get_crosstab_tuplestore(char *sql,
 						HTAB *crosstab_hash,
 						TupleDesc tupdesc,
-						MemoryContext per_query_ctx,
-						bool randomAccess)
+						Tuplestorestate *tupstore)
 {
-	Tuplestorestate *tupstore;
 	int			num_categories = hash_get_num_entries(crosstab_hash);
 	AttInMetadata *attinmeta = TupleDescGetAttInMetadata(tupdesc);
 	char	  **values;
 	HeapTuple	tuple;
 	int			ret;
 	int			proc;
-
-	/* initialize our tuplestore (while still in query context!) */
-	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
 
 	/* Connect to SPI manager */
 	if ((ret = SPI_connect()) < 0)
@@ -935,10 +857,6 @@ get_crosstab_tuplestore(char *sql,
 	if (SPI_finish() != SPI_OK_FINISH)
 		/* internal error */
 		elog(ERROR, "get_crosstab_tuplestore: SPI_finish() failed");
-
-	tuplestore_donestoring(tupstore);
-
-	return tupstore;
 }
 
 /*
@@ -991,23 +909,15 @@ connectby_text(PG_FUNCTION_ARGS)
 	char	   *branch_delim = NULL;
 	bool		show_branch = false;
 	bool		show_serial = false;
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	AttInMetadata *attinmeta;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
+	Tuplestorestate *tupstore;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
+
+	/* Caller should have provided a tuple descriptor for our result type. */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	if (fcinfo->nargs == 6)
 	{
@@ -1018,12 +928,6 @@ connectby_text(PG_FUNCTION_ARGS)
 		/* default is no show, tilde for the delimiter */
 		branch_delim = pstrdup("~");
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* get the requested return tuple description */
-	tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
-
 	/* does it meet our needs */
 	validateConnectbyTupleDesc(tupdesc, show_branch, show_serial);
 
@@ -1031,30 +935,17 @@ connectby_text(PG_FUNCTION_ARGS)
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
 	/* OK, go to work */
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = connectby(relname,
-								  key_fld,
-								  parent_key_fld,
-								  NULL,
-								  branch_delim,
-								  start_with,
-								  max_depth,
-								  show_branch,
-								  show_serial,
-								  per_query_ctx,
-							  rsinfo->allowedModes & SFRM_Materialize_Random,
-								  attinmeta);
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	/*
-	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual
-	 * tuples are in our tuplestore and passed back through rsinfo->setResult.
-	 * rsinfo->setDesc is set to the tuple description that we actually used
-	 * to build our tuples with, so the caller can verify we did what it was
-	 * expecting.
-	 */
+	connectby(relname,
+			  key_fld,
+			  parent_key_fld,
+			  NULL,
+			  branch_delim,
+			  start_with,
+			  max_depth,
+			  show_branch,
+			  show_serial,
+			  attinmeta,
+			  tupstore);
 	return (Datum) 0;
 }
 
@@ -1071,23 +962,15 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 	char	   *branch_delim = NULL;
 	bool		show_branch = false;
 	bool		show_serial = true;
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	AttInMetadata *attinmeta;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
+	Tuplestorestate *tupstore;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
+
+	/* Caller should have provided a tuple descriptor for our result type. */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	if (fcinfo->nargs == 7)
 	{
@@ -1098,12 +981,6 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 		/* default is no show, tilde for the delimiter */
 		branch_delim = pstrdup("~");
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* get the requested return tuple description */
-	tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
-
 	/* does it meet our needs */
 	validateConnectbyTupleDesc(tupdesc, show_branch, show_serial);
 
@@ -1111,30 +988,17 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
 	/* OK, go to work */
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = connectby(relname,
-								  key_fld,
-								  parent_key_fld,
-								  orderby_fld,
-								  branch_delim,
-								  start_with,
-								  max_depth,
-								  show_branch,
-								  show_serial,
-								  per_query_ctx,
-							  rsinfo->allowedModes & SFRM_Materialize_Random,
-								  attinmeta);
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	/*
-	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual
-	 * tuples are in our tuplestore and passed back through rsinfo->setResult.
-	 * rsinfo->setDesc is set to the tuple description that we actually used
-	 * to build our tuples with, so the caller can verify we did what it was
-	 * expecting.
-	 */
+	connectby(relname,
+			  key_fld,
+			  parent_key_fld,
+			  orderby_fld,
+			  branch_delim,
+			  start_with,
+			  max_depth,
+			  show_branch,
+			  show_serial,
+			  attinmeta,
+			  tupstore);
 	return (Datum) 0;
 }
 
@@ -1142,7 +1006,7 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 /*
  * connectby - does the real work for connectby_text()
  */
-static Tuplestorestate *
+static void
 connectby(char *relname,
 		  char *key_fld,
 		  char *parent_key_fld,
@@ -1152,14 +1016,10 @@ connectby(char *relname,
 		  int max_depth,
 		  bool show_branch,
 		  bool show_serial,
-		  MemoryContext per_query_ctx,
-		  bool randomAccess,
-		  AttInMetadata *attinmeta)
+		  AttInMetadata *attinmeta,
+		  Tuplestorestate *tupstore)
 {
-	Tuplestorestate *tupstore = NULL;
 	int			ret;
-	MemoryContext oldcontext;
-
 	int			serial = 1;
 
 	/* Connect to SPI manager */
@@ -1167,37 +1027,26 @@ connectby(char *relname,
 		/* internal error */
 		elog(ERROR, "connectby: SPI_connect returned %d", ret);
 
-	/* switch to longer term context to create the tuple store */
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	/* initialize our tuplestore */
-	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
-
-	MemoryContextSwitchTo(oldcontext);
-
 	/* now go get the whole tree */
-	tupstore = build_tuplestore_recursively(key_fld,
-											parent_key_fld,
-											relname,
-											orderby_fld,
-											branch_delim,
-											start_with,
-											start_with, /* current_branch */
-											0,	/* initial level is 0 */
-											&serial,	/* initial serial is 1 */
-											max_depth,
-											show_branch,
-											show_serial,
-											per_query_ctx,
-											attinmeta,
-											tupstore);
+	build_tuplestore_recursively(key_fld,
+								 parent_key_fld,
+								 relname,
+								 orderby_fld,
+								 branch_delim,
+								 start_with,
+								 start_with,	/* current_branch */
+								 0,		/* initial level is 0 */
+								 &serial,		/* initial serial is 1 */
+								 max_depth,
+								 show_branch,
+								 show_serial,
+								 attinmeta,
+								 tupstore);
 
 	SPI_finish();
-
-	return tupstore;
 }
 
-static Tuplestorestate *
+static void
 build_tuplestore_recursively(char *key_fld,
 							 char *parent_key_fld,
 							 char *relname,
@@ -1210,7 +1059,6 @@ build_tuplestore_recursively(char *key_fld,
 							 int max_depth,
 							 bool show_branch,
 							 bool show_serial,
-							 MemoryContext per_query_ctx,
 							 AttInMetadata *attinmeta,
 							 Tuplestorestate *tupstore)
 {
@@ -1228,7 +1076,7 @@ build_tuplestore_recursively(char *key_fld,
 	HeapTuple	tuple;
 
 	if (max_depth > 0 && level > max_depth)
-		return tupstore;
+		return;
 
 	initStringInfo(&sql);
 
@@ -1386,21 +1234,20 @@ build_tuplestore_recursively(char *key_fld,
 			heap_freetuple(tuple);
 
 			/* recurse using current_key_parent as the new start_with */
-			tupstore = build_tuplestore_recursively(key_fld,
-													parent_key_fld,
-													relname,
-													orderby_fld,
-													branch_delim,
-													values[0],
-													current_branch,
-													level + 1,
-													serial,
-													max_depth,
-													show_branch,
-													show_serial,
-													per_query_ctx,
-													attinmeta,
-													tupstore);
+			build_tuplestore_recursively(key_fld,
+										 parent_key_fld,
+										 relname,
+										 orderby_fld,
+										 branch_delim,
+										 values[0],
+										 current_branch,
+										 level + 1,
+										 serial,
+										 max_depth,
+										 show_branch,
+										 show_serial,
+										 attinmeta,
+										 tupstore);
 
 			/* reset branch for next pass */
 			resetStringInfo(&branchstr);
@@ -1412,8 +1259,6 @@ build_tuplestore_recursively(char *key_fld,
 		xpfree(chk_branchstr.data);
 		xpfree(chk_current_key.data);
 	}
-
-	return tupstore;
 }
 
 /*

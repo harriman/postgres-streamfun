@@ -740,14 +740,12 @@ typedef struct PLpgSQL_execstate
 	bool		readonly_func;
 
 	TupleDesc	rettupdesc;
+	TupleDesc	expected_tupdesc;
 	char	   *exitlabel;		/* the "target" label of the current EXIT or
 								 * CONTINUE stmt, if any */
 	ErrorData  *cur_error;		/* current exception handler's error */
 
 	Tuplestorestate *tuple_store;		/* SRFs accumulate results here */
-	MemoryContext tuple_store_cxt;
-	ResourceOwner tuple_store_owner;
-	ReturnSetInfo *rsi;
 
 	int			found_varno;
 	int			ndatums;

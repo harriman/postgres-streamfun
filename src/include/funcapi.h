@@ -20,6 +20,7 @@
 #include "access/tupdesc.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
+#include "utils/tuplestore.h"
 
 
 /*-------------------------------------------------------------------------
@@ -264,7 +265,7 @@ extern TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc);
  *	{
  *		<user defined code>
  *		<obtain result Datum>
- *		SRF_RETURN_NEXT(funcctx, result);
+ *		SRF_RETURN_NEXT(funcctx, result); <or> SRF_RETURN_NEXT_NULL(funcctx);
  *	}
  *	else
  *		SRF_RETURN_DONE(funcctx);
@@ -293,13 +294,26 @@ extern void end_MultiFuncCall(PG_FUNCTION_ARGS, FuncCallContext *funcctx);
 		PG_RETURN_DATUM(_result); \
 	} while (0)
 
+#define SRF_RETURN_NEXT_NULL(_funcctx) \
+	do { \
+		fcinfo->isnull = true; \
+		SRF_RETURN_NEXT(_funcctx, (Datum) 0); \
+	} while (0)
+
 #define  SRF_RETURN_DONE(_funcctx) \
 	do { \
 		ReturnSetInfo	   *rsi; \
 		end_MultiFuncCall(fcinfo, _funcctx); \
 		rsi = (ReturnSetInfo *) fcinfo->resultinfo; \
 		rsi->isDone = ExprEndResult; \
-		PG_RETURN_NULL(); \
+		PG_RETURN_DATUM((Datum) 0); \
 	} while (0)
+
+
+/* from funcapi.c */
+extern void srf_check_context(FunctionCallInfo fcinfo);
+extern Tuplestorestate *srf_init_materialize_mode(FunctionCallInfo fcinfo);
+extern TupleDesc srf_get_expected_tupdesc(FunctionCallInfo fcinfo, bool isrequired);
+extern void srf_verify_expected_tupdesc(FunctionCallInfo fcinfo, TupleDesc actualtupdesc);
 
 #endif   /* FUNCAPI_H */
