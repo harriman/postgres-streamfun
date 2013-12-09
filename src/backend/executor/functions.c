@@ -20,7 +20,6 @@
 #include "catalog/pg_type.h"
 #include "executor/functions.h"
 #include "funcapi.h"
-#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
@@ -42,7 +41,6 @@ typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
 	Tuplestorestate *tstore;	/* where to put result tuples */
-	MemoryContext cxt;			/* context containing tstore */
 	JunkFilter *filter;			/* filter to convert tuple type */
 } DR_sqlfunction;
 
@@ -105,9 +103,6 @@ typedef struct
 	bool		lazyEval;		/* true if using lazyEval for result query */
 
 	ParamListInfo paramLI;		/* Param list representing current args */
-
-	Tuplestorestate *tstore;	/* where we accumulate result tuples */
-
 	JunkFilter *junkFilter;		/* will be NULL if function returns VOID */
 
 	/*
@@ -152,10 +147,10 @@ static Node *sql_fn_make_param(SQLFunctionParseInfoPtr pinfo,
 static Node *sql_fn_resolve_param_name(SQLFunctionParseInfoPtr pinfo,
 						  const char *paramname, int location);
 static List *init_execution_state(List *queryTree_list,
-					 SQLFunctionCachePtr fcache,
-					 bool lazyEvalOK);
-static void init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK);
-static void postquel_start(execution_state *es, SQLFunctionCachePtr fcache);
+					 SQLFunctionCachePtr fcache);
+static void init_sql_fcache(FmgrInfo *finfo, Oid collation);
+static void postquel_start(execution_state *es, SQLFunctionCachePtr fcache,
+					Tuplestorestate *tuplestore);
 static bool postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache);
 static void postquel_end(execution_state *es);
 static void postquel_sub_params(SQLFunctionCachePtr fcache,
@@ -462,8 +457,7 @@ sql_fn_resolve_param_name(SQLFunctionParseInfoPtr pinfo,
  */
 static List *
 init_execution_state(List *queryTree_list,
-					 SQLFunctionCachePtr fcache,
-					 bool lazyEvalOK)
+					 SQLFunctionCachePtr fcache)
 {
 	List	   *eslist = NIL;
 	execution_state *lasttages = NULL;
@@ -546,8 +540,7 @@ init_execution_state(List *queryTree_list,
 	if (lasttages && fcache->junkFilter)
 	{
 		lasttages->setsResult = true;
-		if (lazyEvalOK &&
-			IsA(lasttages->stmt, PlannedStmt))
+		if (IsA(lasttages->stmt, PlannedStmt))
 		{
 			PlannedStmt *ps = (PlannedStmt *) lasttages->stmt;
 
@@ -565,7 +558,7 @@ init_execution_state(List *queryTree_list,
  * Initialize the SQLFunctionCache for a SQL function
  */
 static void
-init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK)
+init_sql_fcache(FmgrInfo *finfo, Oid collation)
 {
 	Oid			foid = finfo->fn_oid;
 	MemoryContext fcontext;
@@ -706,10 +699,7 @@ init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK)
 	 * Note: we set fcache->returnsTuple according to whether we are returning
 	 * the whole tuple result or just a single column.	In the latter case we
 	 * clear returnsTuple because we need not act different from the scalar
-	 * result case, even if it's a rowtype column.  (However, we have to force
-	 * lazy eval mode in that case; otherwise we'd need extra code to expand
-	 * the rowtype column into multiple columns, since we have no way to
-	 * notify the caller that it should do that.)
+	 * result case, even if it's a rowtype column.
 	 *
 	 * check_sql_fn_retval will also construct a JunkFilter we can use to
 	 * coerce the returned rowtype to the desired form (unless the result type
@@ -726,21 +716,10 @@ init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK)
 		/* Make sure output rowtype is properly blessed */
 		BlessTupleDesc(fcache->junkFilter->jf_resultSlot->tts_tupleDescriptor);
 	}
-	else if (fcache->returnsSet && type_is_rowtype(fcache->rettype))
-	{
-		/*
-		 * Returning rowtype as if it were scalar --- materialize won't work.
-		 * Right now it's sufficient to override any caller preference for
-		 * materialize mode, but to add more smarts in init_execution_state
-		 * about this, we'd probably need a three-way flag instead of bool.
-		 */
-		lazyEvalOK = true;
-	}
 
 	/* Finally, plan the queries */
 	fcache->func_state = init_execution_state(queryTree_list,
-											  fcache,
-											  lazyEvalOK);
+											  fcache);
 
 	/* Mark fcache with time of creation to show it's valid */
 	fcache->lxid = MyProc->lxid;
@@ -753,7 +732,8 @@ init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK)
 
 /* Start up execution of one execution_state node */
 static void
-postquel_start(execution_state *es, SQLFunctionCachePtr fcache)
+postquel_start(execution_state *es, SQLFunctionCachePtr fcache,
+			Tuplestorestate *tuplestore)
 {
 	DestReceiver *dest;
 
@@ -774,8 +754,7 @@ postquel_start(execution_state *es, SQLFunctionCachePtr fcache)
 		/* pass down the needed info to the dest receiver routines */
 		myState = (DR_sqlfunction *) dest;
 		Assert(myState->pub.mydest == DestSQLFunction);
-		myState->tstore = fcache->tstore;
-		myState->cxt = CurrentMemoryContext;
+		myState->tstore = tuplestore;
 		myState->filter = fcache->junkFilter;
 	}
 	else
@@ -840,7 +819,7 @@ postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache)
 	else
 	{
 		/* Run regular commands to completion unless lazyEval */
-		long		count = (es->lazyEval) ? 1L : 0L;
+		long		count = (es->lazyEval && fcache->lazyEval) ? 1L : 0L;
 
 		ExecutorRun(es->qd, ForwardScanDirection, count);
 
@@ -933,6 +912,8 @@ postquel_get_single_result(TupleTableSlot *slot,
 	Datum		value;
 	MemoryContext oldcontext;
 
+	Assert(!TupIsNull(slot));
+
 	/*
 	 * Set up to return the function value.  For pass-by-reference datatypes,
 	 * be sure to allocate the result in resultcontext, not the current memory
@@ -974,15 +955,13 @@ fmgr_sql(PG_FUNCTION_ARGS)
 	SQLFunctionCachePtr fcache;
 	ErrorContextCallback sqlerrcontext;
 	MemoryContext oldcontext;
-	bool		randomAccess;
-	bool		lazyEvalOK;
 	bool		is_first;
 	bool		pushed_snapshot;
 	execution_state *es;
 	TupleTableSlot *slot;
 	Datum		result;
-	List	   *eslist;
 	ListCell   *eslc;
+	Tuplestorestate *tuplestore = NULL;
 
 	/*
 	 * Setup error traceback support for ereport()
@@ -991,32 +970,6 @@ fmgr_sql(PG_FUNCTION_ARGS)
 	sqlerrcontext.arg = fcinfo->flinfo;
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
-
-	/* Check call context */
-	if (fcinfo->flinfo->fn_retset)
-	{
-		ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
-		/*
-		 * For simplicity, we require callers to support both set eval modes.
-		 * There are cases where we must use one or must use the other, and
-		 * it's not really worthwhile to postpone the check till we know. But
-		 * note we do not require caller to provide an expectedDesc.
-		 */
-		if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-			(rsi->allowedModes & SFRM_ValuePerCall) == 0 ||
-			(rsi->allowedModes & SFRM_Materialize) == 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("set-valued function called in context that cannot accept a set")));
-		randomAccess = rsi->allowedModes & SFRM_Materialize_Random;
-		lazyEvalOK = !(rsi->allowedModes & SFRM_Materialize_Preferred);
-	}
-	else
-	{
-		randomAccess = false;
-		lazyEvalOK = true;
-	}
 
 	/*
 	 * Initialize fcache (build plans) if first time through; or re-initialize
@@ -1038,13 +991,38 @@ fmgr_sql(PG_FUNCTION_ARGS)
 
 	if (fcache == NULL)
 	{
-		init_sql_fcache(fcinfo->flinfo, PG_GET_COLLATION(), lazyEvalOK);
+		init_sql_fcache(fcinfo->flinfo, PG_GET_COLLATION());
 		fcache = (SQLFunctionCachePtr) fcinfo->flinfo->fn_extra;
 	}
 
 	/*
+	 * Decide how to return results from a set-returning function.  For lazy
+	 * evaluation, we use the default value-per-call mode.  Otherwise we use
+	 * a tuplestore to return all the results at once.
+	 *
+	 * We could set fcache->lazyEval = false to force materialize mode for
+	 * efficiency if the consumer is known to be non-interactive or there is
+	 * a blocking operator downstream.  But we have no way to know that.
+	 * Here's an idea... always use materialize mode; then if lazyEval, we
+	 * would materialize incrementally: set the ExecutorRun row limit to
+	 * append one row to the tuplestore on the first iteration, and raise the
+	 * row limit for later iterations.	That would let the first results be
+	 * seen promptly, yet be efficient for large result sets.
+	 */
+	if (fcache->returnsSet)
+	{
+		if (fcache->lazyEval)
+			srf_check_context(fcinfo);
+		else
+			tuplestore = srf_init_materialize_mode(fcinfo);
+
+		/* Result tuples must be compatible with caller's expected type. */
+		srf_verify_expected_tupdesc(fcinfo, fcache->junkFilter->jf_cleanTupType);
+	}
+
+	/*
 	 * Switch to context in which the fcache lives.  This ensures that our
-	 * tuplestore etc will have sufficient lifetime.  The sub-executor is
+	 * structures will have sufficient lifetime.  The sub-executor is
 	 * responsible for deleting per-tuple information.	(XXX in the case of a
 	 * long-lived FmgrInfo, this policy represents more memory leakage, but
 	 * it's not entirely clear where to keep stuff instead.)
@@ -1055,10 +1033,9 @@ fmgr_sql(PG_FUNCTION_ARGS)
 	 * Find first unfinished query in function, and note whether it's the
 	 * first query.
 	 */
-	eslist = fcache->func_state;
 	es = NULL;
 	is_first = true;
-	foreach(eslc, eslist)
+	foreach(eslc, fcache->func_state)
 	{
 		es = (execution_state *) lfirst(eslc);
 
@@ -1078,13 +1055,6 @@ fmgr_sql(PG_FUNCTION_ARGS)
 	 */
 	if (is_first && es && es->status == F_EXEC_START)
 		postquel_sub_params(fcache, fcinfo);
-
-	/*
-	 * Build tuplestore to hold results, if we don't have one already. Note
-	 * it's in the query-lifespan context.
-	 */
-	if (!fcache->tstore)
-		fcache->tstore = tuplestore_begin_heap(randomAccess, false, work_mem);
 
 	/*
 	 * Execute each command in the function one after another until we either
@@ -1129,7 +1099,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 					UpdateActiveSnapshotCommandId();
 			}
 
-			postquel_start(es, fcache);
+			postquel_start(es, fcache, tuplestore);
 		}
 		else if (!fcache->readonly_func && !pushed_snapshot)
 		{
@@ -1200,20 +1170,13 @@ fmgr_sql(PG_FUNCTION_ARGS)
 		{
 			/*
 			 * If we stopped short of being done, we must have a lazy-eval
-			 * row.
+			 * row.  It has been saved in the junk filter's output slot.
+			 * Extract the result as a datum, and copy out from the slot.
 			 */
-			Assert(es->lazyEval);
-			/* Re-use the junkfilter's output slot to fetch back the tuple */
-			Assert(fcache->junkFilter);
 			slot = fcache->junkFilter->jf_resultSlot;
-			if (!tuplestore_gettupleslot(fcache->tstore, true, false, slot))
-				elog(ERROR, "failed to fetch lazy-eval tuple");
-			/* Extract the result as a datum, and copy out from the slot */
 			result = postquel_get_single_result(slot, fcinfo,
 												fcache, oldcontext);
-			/* Clear the tuplestore, but keep it for next time */
-			/* NB: this might delete the slot's content, but we don't care */
-			tuplestore_clear(fcache->tstore);
+			ExecClearTuple(slot);
 
 			/*
 			 * Let caller know we're not finished.
@@ -1237,13 +1200,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 			/*
 			 * We are done with a lazy evaluation.	Clean up.
 			 */
-			tuplestore_clear(fcache->tstore);
-
-			/*
-			 * Let caller know we're finished.
-			 */
 			rsi->isDone = ExprEndResult;
-
 			fcinfo->isnull = true;
 			result = (Datum) 0;
 
@@ -1259,18 +1216,9 @@ fmgr_sql(PG_FUNCTION_ARGS)
 		else
 		{
 			/*
-			 * We are done with a non-lazy evaluation.	Return whatever is in
-			 * the tuplestore.	(It is now caller's responsibility to free the
-			 * tuplestore when done.)
+			 * We are done with a non-lazy evaluation.	Results are in the
+			 * tuplestore.	Our caller must free the tuplestore when done.
 			 */
-			rsi->returnMode = SFRM_Materialize;
-			rsi->setResult = fcache->tstore;
-			fcache->tstore = NULL;
-			/* must copy desc because execQual will free it */
-			if (fcache->junkFilter)
-				rsi->setDesc = CreateTupleDescCopy(fcache->junkFilter->jf_cleanTupType);
-
-			fcinfo->isnull = true;
 			result = (Datum) 0;
 
 			/* Deregister shutdown callback, if we made one */
@@ -1290,11 +1238,14 @@ fmgr_sql(PG_FUNCTION_ARGS)
 		 */
 		if (fcache->junkFilter)
 		{
-			/* Re-use the junkfilter's output slot to fetch back the tuple */
+			/* Has a row been saved in the junkfilter's output slot? */
 			slot = fcache->junkFilter->jf_resultSlot;
-			if (tuplestore_gettupleslot(fcache->tstore, true, false, slot))
+			if (!TupIsNull(slot))
+			{
 				result = postquel_get_single_result(slot, fcinfo,
 													fcache, oldcontext);
+				ExecClearTuple(slot);
+			}
 			else
 			{
 				fcinfo->isnull = true;
@@ -1308,9 +1259,6 @@ fmgr_sql(PG_FUNCTION_ARGS)
 			fcinfo->isnull = true;
 			result = (Datum) 0;
 		}
-
-		/* Clear the tuplestore, but keep it for next time */
-		tuplestore_clear(fcache->tstore);
 	}
 
 	/* Pop snapshot if we have pushed one */
@@ -1458,10 +1406,9 @@ ShutdownSQLFunction(Datum arg)
 		}
 	}
 
-	/* Release tuplestore if we have one */
-	if (fcache->tstore)
-		tuplestore_end(fcache->tstore);
-	fcache->tstore = NULL;
+	/* Junk filter's slot might be holding a result tuple.  Free it. */
+	if (fcache->junkFilter)
+		ExecClearTuple(fcache->junkFilter->jf_resultSlot);
 
 	/* execUtils will deregister the callback... */
 	fcache->shutdown_reg = false;
@@ -1896,11 +1843,30 @@ sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_sqlfunction *myState = (DR_sqlfunction *) self;
 
-	/* Filter tuple as needed */
-	slot = ExecFilterJunk(myState->filter, slot);
+	/*
+	 * If we have a tuplestore, append the junk-filtered tuples to it.
+	 */
+	if (myState->tstore)
+	{
+		slot = ExecFilterJunk(myState->filter, slot);
+		tuplestore_puttupleslot(myState->tstore, slot);
+		ExecClearTuple(slot);
+	}
 
-	/* Store the filtered tuple into the tuplestore */
-	tuplestore_puttupleslot(myState->tstore, slot);
+	/*
+	 * If no tuplestore, we'll keep at most one tuple.  Apply the junk filter;
+	 * copy the tuple into longer-lived memory; and leave the copy in the junk
+	 * filter's result slot.
+	 *
+	 * In some cases the query must run to completion even though only one
+	 * result tuple is wanted.	We keep the first tuple, and discard any later
+	 * arrivals.
+	 */
+	else if (TupIsNull(myState->filter->jf_resultSlot))
+	{
+		slot = ExecFilterJunk(myState->filter, slot);
+		ExecMaterializeSlot(slot);
+	}
 }
 
 /*

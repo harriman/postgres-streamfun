@@ -1870,40 +1870,29 @@ Datum
 pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 {
 #define PG_STAT_GET_WAL_SENDERS_COLS	8
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	int		   *sync_priority;
 	int			priority = 0;
 	int			sync_standby = -1;
 	int			i;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	tupdesc = CreateTemplateTupleDesc(PG_STAT_GET_WAL_SENDERS_COLS, false);
+	TupleDescInitEntry(tupdesc, 1, "procpid", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "state", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 3, "sent_location", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 4, "write_location", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 5, "flush_location", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 6, "replay_location", TEXTOID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 7, "sync_priority", INT4OID, -1, 0);
+ 	TupleDescInitEntry(tupdesc, 8, "sync_state", TEXTOID, -1, 0);
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 	/*
 	 * Get the priorities of sync standbys all in one go, to minimise lock
@@ -2018,10 +2007,6 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 	pfree(sync_priority);
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
 	return (Datum) 0;
 }
 

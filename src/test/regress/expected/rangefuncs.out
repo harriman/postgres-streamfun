@@ -231,6 +231,232 @@ DROP FUNCTION getfoo(int);
 DROP FUNCTION foot(int);
 DROP TABLE foo2;
 DROP TABLE foo;
+-- set-returning functions cascaded in select list
+SELECT generate_series(1,1+generate_series(1,generate_series(2,4)));
+ generate_series 
+-----------------
+               1
+               2
+               1
+               2
+               3
+               1
+               2
+               1
+               2
+               3
+               1
+               2
+               3
+               4
+               1
+               2
+               1
+               2
+               3
+               1
+               2
+               3
+               4
+               1
+               2
+               3
+               4
+               5
+(28 rows)
+
+-- set-returning functions cascaded in FROM list
+SELECT array_agg(a) FROM generate_series(1,1+generate_series(1,generate_series(2,4))) gs(a);
+                         array_agg                         
+-----------------------------------------------------------
+ {1,2,1,2,3,1,2,1,2,3,1,2,3,4,1,2,1,2,3,1,2,3,4,1,2,3,4,5}
+(1 row)
+
+-- function or operator with more than one set-valued argument
+SELECT generate_series(1,2)+generate_series(3,4);  -- fail
+ERROR:  functions and operators can take at most one set argument
+CONTEXT:  Operator "+(integer,integer)"
+-- when set-returning function uses value-per-call mode and the function scan
+-- is cut off (e.g. by LIMIT) part way through and a new scan is started, the
+-- function should start afresh with a new result set ignoring previous state.
+SELECT array_agg(a) FROM generate_series(10,0,-1) gsa(a) WHERE a IN (SELECT b FROM generate_series(2,a+10) gsb(b) LIMIT 4);  -- {5,4,3,2}
+ array_agg 
+-----------
+ {5,4,3,2}
+(1 row)
+
+-- repeat the above tests with an srf that uses materialize mode
+-- (at present, all plpgsql set-returning functions use materialize mode)
+DROP FUNCTION foo(int,int);
+ERROR:  function foo(integer, integer) does not exist
+DROP FUNCTION foo2(int,int);
+ERROR:  function foo2(integer, integer) does not exist
+CREATE FUNCTION foo(int,int) RETURNS SETOF int AS 'BEGIN FOR i IN $1 .. $2 LOOP RETURN NEXT i; END LOOP; END;' LANGUAGE plpgsql;
+CREATE FUNCTION foo2(int,int) RETURNS SETOF int AS 'BEGIN FOR i IN REVERSE $1 .. $2 LOOP RETURN NEXT i; END LOOP; END;' LANGUAGE plpgsql;
+SELECT foo(1,1+foo(1,foo(2,4)));
+ foo 
+-----
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   3
+   4
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   3
+   4
+   1
+   2
+   3
+   4
+   5
+(28 rows)
+
+SELECT array_agg(a) FROM foo(1,1+foo(1,foo(2,4))) gs(a);
+                         array_agg                         
+-----------------------------------------------------------
+ {1,2,1,2,3,1,2,1,2,3,1,2,3,4,1,2,1,2,3,1,2,3,4,1,2,3,4,5}
+(1 row)
+
+SELECT array_agg(a) FROM foo2(10,0) gsa(a) WHERE a IN (SELECT b FROM foo(2,a+10) gsb(b) LIMIT 4);  -- {5,4,3,2}
+ array_agg 
+-----------
+ {5,4,3,2}
+(1 row)
+
+-- cascade between value-per-call and materialize mode SRFs
+SELECT foo(1,generate_series(2,foo(3,5)));
+ foo 
+-----
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   3
+   4
+   1
+   2
+   1
+   2
+   3
+   1
+   2
+   3
+   4
+   1
+   2
+   3
+   4
+   5
+(28 rows)
+
+SELECT array_agg(a) FROM generate_series(1,foo(2,generate_series(3,5))) gs(a);
+                         array_agg                         
+-----------------------------------------------------------
+ {1,2,1,2,3,1,2,1,2,3,1,2,3,4,1,2,1,2,3,1,2,3,4,1,2,3,4,5}
+(1 row)
+
+DROP FUNCTION foo(int,int);
+DROP FUNCTION foo2(int,int);
+-- fetch bidirectionally using scrollable cursor on set-returning function
+COMMIT;
+WARNING:  there is no transaction in progress
+BEGIN;
+DECLARE cur SCROLL CURSOR FOR SELECT b FROM generate_series(1,generate_series(3,5)) a(b);
+FETCH 8 cur;
+ b 
+---
+ 1
+ 2
+ 3
+ 1
+ 2
+ 3
+ 4
+ 1
+(8 rows)
+
+FETCH -4 cur;
+ b 
+---
+ 4
+ 3
+ 2
+ 1
+(4 rows)
+
+FETCH 8 cur;
+ b 
+---
+ 2
+ 3
+ 4
+ 1
+ 2
+ 3
+ 4
+ 5
+(8 rows)
+
+FETCH BACKWARD cur;
+ b 
+---
+ 4
+(1 row)
+
+FETCH 8 cur;  -- 1 row
+ b 
+---
+ 5
+(1 row)
+
+FETCH BACKWARD ALL cur;  -- 12 rows
+ b 
+---
+ 5
+ 4
+ 3
+ 2
+ 1
+ 4
+ 3
+ 2
+ 1
+ 3
+ 2
+ 1
+(12 rows)
+
+FETCH cur;
+ b 
+---
+ 1
+(1 row)
+
+CLOSE cur;
+COMMIT;
 -- Rescan tests --
 CREATE TABLE foorescan (fooid int, foosubid int, fooname text, primary key(fooid,foosubid));
 INSERT INTO foorescan values(5000,1,'abc.5000.1');
@@ -924,9 +1150,11 @@ $$ select (1, 2) $$ language sql;
 select * from foobar();  -- fail
 ERROR:  function return row and query-specified return row do not match
 DETAIL:  Returned type integer at ordinal position 2, but query expects numeric.
+CONTEXT:  Function "foobar()"
 create or replace function foobar(out integer, out numeric) as
 $$ select (1, 2.1, 3) $$ language sql;
 select * from foobar();  -- fail
 ERROR:  function return row and query-specified return row do not match
 DETAIL:  Returned row contains 3 attributes, but query expects 2.
+CONTEXT:  Function "foobar()"
 drop function foobar();

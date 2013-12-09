@@ -286,8 +286,13 @@ extern struct varlena *pg_detoast_datum_packed(struct varlena * datum);
 #define PG_RETURN_NULL()  \
 	do { fcinfo->isnull = true; return (Datum) 0; } while (0)
 
-/* A few internal functions return void (which is not the same as NULL!) */
-#define PG_RETURN_VOID()	 return (Datum) 0
+/*
+ * To return from a function with no meaningful return value: either one that
+ * returns VOID; or a set-returning function that has no further results in
+ * value-per-call mode (and has set rsinfo->isDone = ExprEndResult); or a  
+ * set-returning function that has chosen SFRM_Materialize mode.
+ */
+#define PG_RETURN_VOID()	 return ((Datum) 0)
 
 /* Macros for returning results of standard types */
 
@@ -616,6 +621,8 @@ extern bytea *OidSendFunctionCall(Oid functionId, Datum val);
 /*
  * Routines in fmgr.c
  */
+extern int	fmgr_call_errcontext(FunctionCallInfo fcinfo, bool showInternalNames);
+extern int	fmgr_func_errcontext(Oid functionId, bool showInternalNames);
 extern const Pg_finfo_record *fetch_finfo_record(void *filehandle, char *funcname);
 extern void clear_external_function_hash(void *filehandle);
 extern Oid	fmgr_internal_function(const char *proname);
@@ -636,6 +643,7 @@ extern PGFunction load_external_function(char *filename, char *funcname,
 extern PGFunction lookup_external_function(void *filehandle, char *funcname);
 extern void load_file(const char *filename, bool restricted);
 extern void **find_rendezvous_variable(const char *varName);
+extern char *expand_dynamic_library_name(const char *name);
 
 /*
  * Support for aggregate functions

@@ -18,6 +18,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
+#include "miscadmin.h"			/* work_mem */
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
 #include "utils/array.h"
@@ -51,21 +52,16 @@ FuncCallContext *
 init_MultiFuncCall(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *retval;
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 
-	/*
-	 * Bail if we're called in the wrong context
-	 */
-	if (fcinfo->resultinfo == NULL || !IsA(fcinfo->resultinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
+	/* Fail if function improperly cataloged or caller requires single value. */
+	srf_check_context(fcinfo);
 
 	if (fcinfo->flinfo->fn_extra == NULL)
 	{
 		/*
 		 * First call
 		 */
-		ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 		MemoryContext multi_call_ctx;
 
 		/*
@@ -109,13 +105,7 @@ init_MultiFuncCall(PG_FUNCTION_ARGS)
 									PointerGetDatum(fcinfo->flinfo));
 	}
 	else
-	{
-		/* second and subsequent calls */
-		elog(ERROR, "init_MultiFuncCall cannot be called more than once");
-
-		/* never reached, but keep compiler happy */
-		retval = NULL;
-	}
+		retval = (FuncCallContext *) fcinfo->flinfo->fn_extra;
 
 	return retval;
 }
@@ -188,13 +178,322 @@ shutdown_MultiFuncCall(Datum arg)
 
 
 /*
+ * srf_check_context
+ *
+ * A set-returning function can call this convenience routine to verify that
+ * the function has been properly registered as a set-returning function in
+ * the system catalog; and that its invocation comes from a calling context in
+ * which the set-returning protocol is supported.
+ *
+ * We recommend that set-returning functions call this routine when called for
+ * the first time.  (Calling more than once is ok but redundant.)  However,
+ * it's not necessary when using srf_init_materialize_mode, SRF_FIRSTCALL_INIT
+ * or init_MultiFuncCall because those have the same checking built in.
+ *
+ * On return, the caller can assume that fcinfo->resultinfo points to a
+ * ReturnSetInfo structure.
+ */
+void
+srf_check_context(FunctionCallInfo fcinfo)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	/*
+	 * If ReturnSetInfo has been set up to use the set-returning function 
+	 * protocol, then we know that the function was rightly cataloged as a 
+	 * set-returning function (with SETOF or TABLE in the result type), and
+	 * that the function's caller demands a set-valued result.  At present, 
+	 * all such calls come through the ExecEvalSRF() routine in the expression
+	 * evaluator.  We assume ExecEvalSRF() and friends have set up the 
+	 * structures properly, and already checked the calling context, etc.
+	 *
+	 * We leave it to the function's caller to complain in case the function
+	 * chooses a mode that its caller doesn't accept.  That way a more precise
+	 * error message can be given.  (In PostgreSQL at present, all calls to
+	 * set-returning functions are made via the expression evaluator, and both
+	 * modes - value-per-call and materialize - are always allowed - although
+	 * after a function has returned in materialize mode, or has returned a 
+	 * nonempty result in value-per-call mode, it must keep on using that same 
+	 * mode until the query is finished.)
+	 */
+	if (rsinfo != NULL &&
+		IsA(rsinfo, ReturnSetInfo) &&
+		(rsinfo->allowedModes & (SFRM_ValuePerCall | SFRM_Materialize)))
+		return;
+
+	/* 
+	 * Somehow this set-returning function was called via some improper path 
+	 * bypassing ExecEvalSRF and lacking the required protocol.  That could 
+	 * happen if the function is wrongly cataloged without SETOF or TABLE  
+	 * in the result type, so the expression evaluator calls it as an ordinary
+	 * non-set-returning function.
+	 */
+	if (fcinfo->flinfo != NULL &&
+		!fcinfo->flinfo->fn_retset)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_E_R_I_E_SRF_PROTOCOL_VIOLATED),
+				 errmsg("Function attempts to return a set but was defined "
+						"without RETURNS SETOF."),
+				 errhint("CREATE FUNCTION should specify SETOF or TABLE in the "
+						 "result type for this function."),
+				 fmgr_call_errcontext(fcinfo, true)));
+	}
+
+	/* 
+	 * Function was probably invoked by direct function call.  Could happen if
+	 * a set-returning function somehow gets cataloged into a category that is 
+	 * called directly or specially, such as casts, aggregates, or btree ops.
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("set-valued function called in context that cannot accept a set"),
+			 fmgr_call_errcontext(fcinfo, true)));
+}
+
+
+/*
+ * srf_init_materialize_mode
+ *
+ * A set-returning function can call this convenience routine to declare that
+ * it will return a set of result tuples via the "materialize mode" protocol,
+ * and to obtain a tuplestore into which it should insert the result tuples.
+ *
+ * After srf_init_materialize_mode has been called, the set-returning function
+ * should append all of its result tuples (zero or more) to the tuplestore by
+ * calling a suitable tuplestore_put* routine, and return (Datum) 0 to exit.
+ *
+ * Optionally, instead of returning all of the results at once, the
+ * set-returning function can return a series of nonempty partial results
+ * having any desired number of tuples.  Thus the function can balance latency
+ * with efficiency.  This is done by appending a partial result of one or more
+ * tuples to the tuplestore and setting rsinfo->isDone = ExprMultipleResult
+ * before returning.  Then after the function's caller has processed the
+ * partial result, it will call the function again with unchanged arguments,
+ * still with isDone == ExprMultipleResult, to produce the next portion of the
+ * result.  When there are no more results, the set-returning function should
+ * end the iteration by returning with nothing added to the tuplestore; or,
+ * alternatively, by setting rsinfo->isDone = ExprSingleResult or 
+ * ExprEndResult when returning the final installment of zero or more tuples.
+ *
+ * After the function has finished returning the results for the given
+ * argument values, the caller can call again with new argument values.
+ * Each time it is called, the set-returning function  may optionally call
+ * srf_init_materialize_mode again to get the tuplestore pointer; or it may
+ * simply get the pointer from rsinfo->setResult itself.
+ *
+ * The set-returning function's caller takes ownership of the tuplestore and
+ * will be responsible for freeing it when it is no longer needed.  The
+ * function should not change the tuplestore's read pointer position.  A
+ * set-returning function must not call tuplestore_end(), tuplestore_clear(),
+ * or tuplestore_trim() on a pointer which it has received or returned in the
+ * rsinfo->setResult field.
+ *
+ * It's ok for a set-returning function to call this routine more than once.
+ *
+ * On return, the caller can assume that fcinfo->resultinfo points to a
+ * ReturnSetInfo structure.
+ */
+Tuplestorestate *
+srf_init_materialize_mode(FunctionCallInfo fcinfo)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	/* Fail if function improperly cataloged or caller requires single value. */
+	srf_check_context(fcinfo);
+
+	/*
+	 * Create tuplestore, unless the function's caller has provided one.
+	 *
+	 * When a set-returning function has a set-valued argument, a tuplestore
+	 * created by the function on the first iteration could be passed in again
+	 * to gather additional results on subsequent iterations.  The function is
+	 * expected to append its new results (if any) to the existing contents.
+	 */
+	if (!rsinfo->setResult)
+	{
+		MemoryContext oldcontext;
+		bool randomAccess = false;
+
+		/* Switch to per-query memory context. */
+		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
+
+		/* Does function's caller want to read tuplestore bidirectionally? */
+		if (rsinfo->allowedModes & SFRM_Materialize_Random)
+			randomAccess = true;
+
+		/* Create the tuplestore. */
+		rsinfo->setResult = tuplestore_begin_heap(randomAccess, false, work_mem);
+
+		/* Switch back to caller's memory context. */
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* Tell function's caller to obtain the result from the tuplestore. */
+	rsinfo->returnMode = SFRM_Materialize;
+
+	/* Return the tuplestore. */
+	return rsinfo->setResult;
+}
+
+
+/*
+ * srf_get_expected_tupdesc
+ *
+ * A set-returning function, or a function returning a row type (either a
+ * "composite" or RECORD type), can call this convenience routine to obtain a
+ * tuple descriptor for the function's expected result tuple format.
+ *
+ * If 'isrequired' is true, and the expected result tuple format cannot be
+ * determined, then this routine signals an error.
+ *
+ * In most cases the result tuples of such a function must be binary
+ * compatible with an expected format derived from the SQL function definition
+ * (with ANY* types resolved from context) or specified explicitly in the
+ * query.
+ *
+ * However, for some (unusual) functions returning [SETOF] RECORD, the result
+ * tuple format might be unconstrained by context, and there could be no
+ * expected descriptor.  This occurs if the function is defined with no OUT or
+ * INOUT parameters, and the query invokes the function in a context other
+ * than a FROM-list or function scan, such that the syntax does not allow
+ * explicit specification of the result column types.  Then this routine
+ * raises an error if 'isrequired' is true, or returns NULL if 'isrequired' is
+ * false.  In the latter rare case, the function is permitted to return tuples 
+ * in any valid format, for which it must provide the descriptor.
+ *
+ * Generally the expected tuple descriptor - if any - is predetermined by the
+ * function's caller and passed to the function via the rsinfo->expectedDesc
+ * field.  But at present this is not done for non-set-returning functions
+ * that return a composite type (a row type defined in the catalog, other than
+ * RECORD).  Such functions can obtain the expected descriptor by calling this
+ * routine; rsinfo->expectedDesc is filled in as a side-effect of the call.
+ *
+ * Tuples in memory generally carry header fields identifying the tuple type,
+ * enabling callers to access the columns; this is enough when value-per-call
+ * mode is used, or for non-set-returning functions.  But tuples in a
+ * tuplestore could get squashed to MinimalTuple format, losing that part of
+ * the header.  Columns of a MinimalTuple can be picked out only with the help
+ * of a tuple descriptor that is passed along separately.  To use materialize
+ * mode, there has to be a descriptor for the result tuples, or the query
+ * fails.  rsinfo->expectedDesc is used if non-NULL; otherwise the function
+ * must provide a descriptor by calling srf_verify_expected_tupdesc()
+ * (preferred) or by filling in the rsinfo->setDesc field (deprecated).
+ *
+ * On return, the caller can assume that fcinfo->resultinfo points to a
+ * ReturnSetInfo structure.  If 'isrequired' is true, the caller can assume 
+ * that the returned tuple descriptor pointer is non-NULL.
+ *
+ * Unlike most of the other srf_* routines, this routine may be called by
+ * non-set-returning functions.
+ */
+TupleDesc
+srf_get_expected_tupdesc(FunctionCallInfo fcinfo, bool isrequired)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("function called in an unsupported context"),
+				 fmgr_call_errcontext(fcinfo, false)));
+
+	if (rsinfo->expectedDesc == NULL)
+	{
+		/*
+		 * For a non-set-returning function, expectedDesc might not have been
+		 * filled in yet; so try now.  For a set-returning function, this was
+		 * done before the function was called, so no need to repeat it.
+		 */
+		if (!fcinfo->flinfo->fn_retset)
+		{
+			MemoryContext	qcontext = rsinfo->econtext->ecxt_per_query_memory;
+			MemoryContext	oldcontext = MemoryContextSwitchTo(qcontext);
+			bool	returnstuple;
+
+			get_expr_result_tupdesc((Expr *) fcinfo->flinfo->fn_expr,
+									NULL,
+									&rsinfo->expectedDesc,
+									&returnstuple);
+			if (rsinfo->expectedDesc)
+				BlessTupleDesc(rsinfo->expectedDesc);
+
+			MemoryContextSwitchTo(oldcontext);
+		}
+
+		if (isrequired && rsinfo->expectedDesc == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("function returning record called in context "
+							"that cannot accept type record"),
+					 fmgr_call_errcontext(fcinfo, false)));
+	}
+
+	return rsinfo->expectedDesc;
+}
+
+/*
+ * srf_verify_expected_tupdesc
+ *
+ * This routine raises an error if the tuple descriptor 'actualtupdesc'
+ * specifies a format that is not binary compatible with the calling
+ * function's expected result tuple descriptor (rsinfo->expectedDesc).  But
+ * when no expected tuple descriptor is available, this routine stores a copy
+ * of the actualtupdesc into the expected descriptor field; in which case,
+ * for a set-returning function using materialize mode, the copy will
+ * eventually be used to read the results from the tuplestore.
+ *
+ * Set-returning functions that use this routine need not fill in the
+ * rsinfo->setDesc field, which is now deprecated.
+ *
+ * Set-returning functions using value-per-call mode, and non-set-returning
+ * functions returning RECORD, have checking done each time they return a
+ * tuple.  So they generally don't need to call this routine unless they want
+ * the verification done earlier, e.g. before an expensive computation.
+ *
+ * On return, the caller can assume that fcinfo->resultinfo points to a
+ * ReturnSetInfo structure.
+ *
+ * Unlike most of the other srf_* routines, this routine may be called by
+ * non-set-returning functions that return a RECORD or row type.
+ */
+void
+srf_verify_expected_tupdesc(FunctionCallInfo fcinfo, TupleDesc actualtupdesc)
+{
+	Assert(actualtupdesc != NULL);
+
+	/* Check context, and make sure expectedDesc has been set if possible. */
+	srf_get_expected_tupdesc(fcinfo, false);
+
+	/*
+	 * Verify the actual result tuple format matches the expected layout.  If
+	 * there's still no expected descriptor, fill in expected from actual.
+	 */
+	ExecVerifyExpectedTupleDesc(fcinfo, actualtupdesc);
+}
+
+
+/*
  * get_call_result_type
  *		Given a function's call info record, determine the kind of datatype
  *		it is supposed to return.  If resultTypeId isn't NULL, *resultTypeId
  *		receives the actual datatype OID (this is mainly useful for scalar
  *		result types).	If resultTupleDesc isn't NULL, *resultTupleDesc
  *		receives a pointer to a TupleDesc when the result is of a composite
- *		type, or NULL when it's a scalar result.
+ *		type, or NULL when it's a scalar result or unresolvable RECORD type.
+ *
+ * TYPEFUNC_COMPOSITE is returned in exactly those cases where it is possible
+ * to obtain a complete result tuple descriptor: both for "composite" row
+ * types defined in the catalog, and for uncataloged but resolvable RECORD
+ * types.  Then on return, if resultTupleDesc is non-NULL, *resultTupleDesc
+ * points to an unshared tuple descriptor that has been newly palloc'ed in
+ * the current memory context.  When no longer needed, the caller may free it
+ * by calling FreeTupleDesc(); otherwise it simply goes away when the memory
+ * context is reset or deleted; ReleaseTupleDesc() is unnecessary (but
+ * harmless).  It has been "blessed", meaning that its tdtypeid and tdtypmod
+ * can be given to lookup_rowtype_tupdesc() to access a copy of the descriptor
+ * in the type cache; thus it can be used to form tuples that can be passed
+ * and returned without an accompanying descriptor, e.g. by Datum.
  *
  * One hard case that this handles is resolution of actual rowtypes for
  * functions returning RECORD (from either the function's OUT parameter
@@ -297,7 +596,7 @@ internal_get_result_type(Oid funcid,
 	HeapTuple	tp;
 	Form_pg_proc procform;
 	Oid			rettype;
-	TupleDesc	tupdesc;
+	TupleDesc	tupdesc = NULL;
 
 	/* First fetch the function's pg_proc row to inspect its rettype */
 	tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
@@ -307,8 +606,9 @@ internal_get_result_type(Oid funcid,
 
 	rettype = procform->prorettype;
 
-	/* Check for OUT parameters defining a RECORD result */
-	tupdesc = build_function_result_tupdesc_t(tp);
+	/* Does RECORD result have at least two OUT or INOUT parameters? */
+	if (procform->prorettype == RECORDOID)
+		tupdesc = build_function_result_tupdesc_t(tp);
 	if (tupdesc)
 	{
 		/*
@@ -332,12 +632,25 @@ internal_get_result_type(Oid funcid,
 		}
 		else
 		{
+			/*
+			 * Input actual param type conflicts with ANYENUM or ANYNONARRAY
+			 * output formal param type; or actual param types not available
+			 * because caller didn't provide call_expr (e.g. direct function
+			 * call, or came in via get_func_result_type).	Except for the
+			 * get_func_result_type case, shouldn't an error be raised here?
+			 */
 			if (resultTupleDesc)
 				*resultTupleDesc = NULL;
 			result = TYPEFUNC_RECORD;
 		}
 
 		ReleaseSysCache(tp);
+
+		/* tupdesc is unshared and newly palloc'ed in caller's context */
+		Assert(resultTupleDesc == NULL ||
+			   *resultTupleDesc == NULL ||
+			   ((*resultTupleDesc)->tdrefcount == -1 &&
+		   GetMemoryChunkContext(*resultTupleDesc) == CurrentMemoryContext));
 
 		return result;
 	}
@@ -375,13 +688,30 @@ internal_get_result_type(Oid funcid,
 		case TYPEFUNC_SCALAR:
 			break;
 		case TYPEFUNC_RECORD:
-			/* We must get the tupledesc from call context */
+			/*
+			 * Function definition specifies "RETURNS [SETOF] RECORD" with no
+			 * OUT or INOUT parameters.  The result tuple format has to be
+			 * computed by the function itself and/or specified explicitly in
+			 * the query.  The latter is allowed (and required) only when
+			 * invoked as a table function, like:  "SELECT ... FROM f(args)
+			 * [AS] alias(colname, coltype, ...)"; in which case the specified
+			 * column names and types were taken by ExecInitFunctionScan() to
+			 * build the expected result descriptor (rsinfo->expectedDesc).
+			 * Otherwise expectedDesc is generally NULL at this point, or may
+			 * have been filled in by the function itself via rsinfo->setDesc
+			 * or srf_verify_expected_tupdesc().
+			 */
 			if (rsinfo && IsA(rsinfo, ReturnSetInfo) &&
 				rsinfo->expectedDesc != NULL)
 			{
 				result = TYPEFUNC_COMPOSITE;
 				if (resultTupleDesc)
-					*resultTupleDesc = rsinfo->expectedDesc;
+				{
+					if (rsinfo->expectedDesc->tdtypeid == RECORDOID &&
+						rsinfo->expectedDesc->tdtypmod < 0)
+						assign_record_type_typmod(rsinfo->expectedDesc);
+					*resultTupleDesc = CreateTupleDescCopyConstr(rsinfo->expectedDesc);
+				}
 				/* Assume no polymorphic columns here, either */
 			}
 			break;
@@ -390,6 +720,12 @@ internal_get_result_type(Oid funcid,
 	}
 
 	ReleaseSysCache(tp);
+
+	/* tupdesc is unshared and newly palloc'ed in caller's context */
+	Assert(!resultTupleDesc ||
+		   !*resultTupleDesc ||
+		   ((*resultTupleDesc)->tdrefcount == -1 &&
+			GetMemoryChunkContext(*resultTupleDesc) == CurrentMemoryContext));
 
 	return result;
 }
@@ -748,6 +1084,9 @@ resolve_polymorphic_argtypes(int numargs, Oid *argtypes, char *argmodes,
 static TypeFuncClass
 get_type_func_class(Oid typid)
 {
+	if (typid == RECORDOID)
+		return TYPEFUNC_RECORD;
+
 	switch (get_typtype(typid))
 	{
 		case TYPTYPE_COMPOSITE:
@@ -758,9 +1097,6 @@ get_type_func_class(Oid typid)
 		case TYPTYPE_RANGE:
 			return TYPEFUNC_SCALAR;
 		case TYPTYPE_PSEUDO:
-			if (typid == RECORDOID)
-				return TYPEFUNC_RECORD;
-
 			/*
 			 * We treat VOID and CSTRING as legitimate scalar datatypes,
 			 * mostly for the convenience of the JDBC driver (which wants to

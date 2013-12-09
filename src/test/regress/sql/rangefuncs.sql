@@ -105,6 +105,49 @@ DROP FUNCTION foot(int);
 DROP TABLE foo2;
 DROP TABLE foo;
 
+-- set-returning functions cascaded in select list
+SELECT generate_series(1,1+generate_series(1,generate_series(2,4)));
+
+-- set-returning functions cascaded in FROM list
+SELECT array_agg(a) FROM generate_series(1,1+generate_series(1,generate_series(2,4))) gs(a);
+
+-- function or operator with more than one set-valued argument
+SELECT generate_series(1,2)+generate_series(3,4);  -- fail
+
+-- when set-returning function uses value-per-call mode and the function scan
+-- is cut off (e.g. by LIMIT) part way through and a new scan is started, the
+-- function should start afresh with a new result set ignoring previous state.
+SELECT array_agg(a) FROM generate_series(10,0,-1) gsa(a) WHERE a IN (SELECT b FROM generate_series(2,a+10) gsb(b) LIMIT 4);  -- {5,4,3,2}
+
+-- repeat the above tests with an srf that uses materialize mode
+-- (at present, all plpgsql set-returning functions use materialize mode)
+DROP FUNCTION foo(int,int);
+DROP FUNCTION foo2(int,int);
+CREATE FUNCTION foo(int,int) RETURNS SETOF int AS 'BEGIN FOR i IN $1 .. $2 LOOP RETURN NEXT i; END LOOP; END;' LANGUAGE plpgsql;
+CREATE FUNCTION foo2(int,int) RETURNS SETOF int AS 'BEGIN FOR i IN REVERSE $1 .. $2 LOOP RETURN NEXT i; END LOOP; END;' LANGUAGE plpgsql;
+SELECT foo(1,1+foo(1,foo(2,4)));
+SELECT array_agg(a) FROM foo(1,1+foo(1,foo(2,4))) gs(a);
+SELECT array_agg(a) FROM foo2(10,0) gsa(a) WHERE a IN (SELECT b FROM foo(2,a+10) gsb(b) LIMIT 4);  -- {5,4,3,2}
+-- cascade between value-per-call and materialize mode SRFs
+SELECT foo(1,generate_series(2,foo(3,5)));
+SELECT array_agg(a) FROM generate_series(1,foo(2,generate_series(3,5))) gs(a);
+DROP FUNCTION foo(int,int);
+DROP FUNCTION foo2(int,int);
+
+-- fetch bidirectionally using scrollable cursor on set-returning function
+COMMIT;
+BEGIN;
+DECLARE cur SCROLL CURSOR FOR SELECT b FROM generate_series(1,generate_series(3,5)) a(b);
+FETCH 8 cur;
+FETCH -4 cur;
+FETCH 8 cur;
+FETCH BACKWARD cur;
+FETCH 8 cur;  -- 1 row
+FETCH BACKWARD ALL cur;  -- 12 rows
+FETCH cur;
+CLOSE cur;
+COMMIT;
+
 -- Rescan tests --
 CREATE TABLE foorescan (fooid int, foosubid int, fooname text, primary key(fooid,foosubid));
 INSERT INTO foorescan values(5000,1,'abc.5000.1');

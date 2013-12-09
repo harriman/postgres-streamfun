@@ -82,16 +82,8 @@ PLy_exec_function(FunctionCallInfo fcinfo, PLyProcedure *proc)
 
 			if (proc->setof == NULL)
 			{
-				/* first time -- do checks and setup */
-				if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-					(rsi->allowedModes & SFRM_ValuePerCall) == 0)
-				{
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("unsupported set function return mode"),
-							 errdetail("PL/Python set-returning functions only support returning only value per call.")));
-				}
-				rsi->returnMode = SFRM_ValuePerCall;
+				/* first time -- fail if caller can't handle SETOF */
+				srf_check_context(fcinfo);
 
 				/* Make iterator out of returned object */
 				proc->setof = PyObject_GetIter(plrv);
@@ -133,7 +125,6 @@ PLy_exec_function(FunctionCallInfo fcinfo, PLyProcedure *proc)
 				if (SPI_finish() != SPI_OK_FINISH)
 					elog(ERROR, "SPI_finish failed");
 
-				fcinfo->isnull = true;
 				return (Datum) NULL;
 			}
 		}
@@ -405,13 +396,7 @@ PLy_function_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc)
 		/* Set up output conversion for functions returning RECORD */
 		if (proc->result.out.d.typoid == RECORDOID)
 		{
-			TupleDesc	desc;
-
-			if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("function returning record called in context "
-								"that cannot accept type record")));
+			TupleDesc	desc = srf_get_expected_tupdesc(fcinfo, true);
 
 			/* cache the output conversion functions */
 			PLy_output_record_funcs(&(proc->result), desc);

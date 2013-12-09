@@ -47,6 +47,7 @@
 #include "catalog/index.h"
 #include "executor/execdebug.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"      /* expression_tree_walker */
 #include "parser/parsetree.h"
 #include "storage/lmgr.h"
 #include "utils/memutils.h"
@@ -57,7 +58,6 @@ static bool get_last_attnums(Node *node, ProjectionInfo *projInfo);
 static bool index_recheck_constraint(Relation index, Oid *constr_procs,
 						 Datum *existing_values, bool *existing_isnull,
 						 Datum *new_values);
-static void ShutdownExprContext(ExprContext *econtext, bool isCommit);
 
 
 /* ----------------------------------------------------------------
@@ -238,7 +238,7 @@ CreateExprContext(EState *estate)
 	econtext->ecxt_per_tuple_memory =
 		AllocSetContextCreate(estate->es_query_cxt,
 							  "ExprContext",
-							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,		/* keep a block */
 							  ALLOCSET_DEFAULT_INITSIZE,
 							  ALLOCSET_DEFAULT_MAXSIZE);
 
@@ -257,6 +257,8 @@ CreateExprContext(EState *estate)
 	econtext->ecxt_estate = estate;
 
 	econtext->ecxt_callbacks = NULL;
+
+	econtext->projection_tuple_memory = NULL;
 
 	/*
 	 * Link the ExprContext into the EState to ensure it is shut down when the
@@ -329,6 +331,8 @@ CreateStandaloneExprContext(void)
 
 	econtext->ecxt_callbacks = NULL;
 
+	econtext->projection_tuple_memory = NULL;
+
 	return econtext;
 }
 
@@ -358,6 +362,9 @@ FreeExprContext(ExprContext *econtext, bool isCommit)
 	ShutdownExprContext(econtext, isCommit);
 	/* And clean up the memory used */
 	MemoryContextDelete(econtext->ecxt_per_tuple_memory);
+	if (econtext->projection_tuple_memory)
+		MemoryContextDelete(econtext->projection_tuple_memory);
+
 	/* Unlink self from owning EState, if any */
 	estate = econtext->ecxt_estate;
 	if (estate)
@@ -383,6 +390,8 @@ ReScanExprContext(ExprContext *econtext)
 	ShutdownExprContext(econtext, true);
 	/* And clean up the memory used */
 	MemoryContextReset(econtext->ecxt_per_tuple_memory);
+	if (econtext->projection_tuple_memory)
+		MemoryContextReset(econtext->projection_tuple_memory);
 }
 
 /*
@@ -490,6 +499,8 @@ ExecGetResultType(PlanState *planstate)
  * inputDesc for relation-scan plan nodes, as a cross check that the relation
  * hasn't been changed since the plan was made.  At higher levels of a plan,
  * there is no need to recheck.
+ *
+ * Warning: econtext is NULL when called by ExecInitSubplan.
  * ----------------
  */
 ProjectionInfo *
@@ -1474,7 +1485,7 @@ UnregisterExprContextCallback(ExprContext *econtext,
  * If isCommit is false, just clean the callback list but don't call 'em.
  * (See comment for FreeExprContext.)
  */
-static void
+void
 ShutdownExprContext(ExprContext *econtext, bool isCommit)
 {
 	ExprContext_CB *ecxt_callback;

@@ -93,7 +93,7 @@ typedef struct ExprContext_CB
  *		what the current inner tuple is and so we look at the expression
  *		context.
  *
- *	There are two memory contexts associated with an ExprContext:
+ *	There are two or three memory contexts associated with an ExprContext:
  *	* ecxt_per_query_memory is a query-lifespan context, typically the same
  *	  context the ExprContext node itself is allocated in.	This context
  *	  can be used for purposes such as storing function call cache info.
@@ -101,6 +101,9 @@ typedef struct ExprContext_CB
  *	  As the name suggests, it will typically be reset once per tuple,
  *	  before we begin to evaluate expressions for that tuple.  Each
  *	  ExprContext normally has its very own per-tuple memory context.
+ *	* ecxt_projection_tuple_memory is a short-term context for results of
+ *	  projection (targetlist) expressions.	It's created only if needed, and
+ *	  reset before evaluating the projection expressions.
  *
  *	CurrentMemoryContext should be set to ecxt_per_tuple_memory before
  *	calling ExecEvalExpr() --- see ExecEvalExprSwitchContext().
@@ -143,6 +146,9 @@ typedef struct ExprContext
 
 	/* Functions to call back when ExprContext is shut down */
 	ExprContext_CB *ecxt_callbacks;
+
+	/* Memory context for evaluating projection expressions */
+	MemoryContext projection_tuple_memory;
 } ExprContext;
 
 /*
@@ -630,7 +636,7 @@ typedef struct ArrayRefExprState
 typedef struct FuncExprState
 {
 	ExprState	xprstate;
-	List	   *args;			/* states of argument expressions */
+	List	   *args;					/* states of argument expressions */
 
 	/*
 	 * Function manager's lookup info for the target function.  If func.fn_oid
@@ -639,50 +645,28 @@ typedef struct FuncExprState
 	 */
 	FmgrInfo	func;
 
-	/*
-	 * For a set-returning function (SRF) that returns a tuplestore, we keep
-	 * the tuplestore here and dole out the result rows one at a time. The
-	 * slot holds the row currently being returned.
-	 */
-	Tuplestorestate *funcResultStore;
-	TupleTableSlot *funcResultSlot;
+	/* At most one argument can be a set-valued expression... */
+	ExprDoneCond argIsDone;				/* set-valued argument state */
 
-	/*
-	 * In some cases we need to compute a tuple descriptor for the function's
-	 * output.	If so, it's stored here.
-	 */
-	TupleDesc	funcResultDesc;
-	bool		funcReturnsTuple;		/* valid when funcResultDesc isn't
-										 * NULL */
+	/* SRF protocol state is shared with the function via fcinfo->resultinfo. */
+	ReturnSetInfo rsinfo;
 
-	/*
-	 * setArgsValid is true when we are evaluating a set-returning function
-	 * that uses value-per-call mode and we are in the middle of a call
-	 * series; we want to pass the same argument values to the function again
-	 * (and again, until it returns ExprEndResult).  This indicates that
-	 * fcinfo_data already contains valid argument data.
-	 */
-	bool		setArgsValid;
+	/* For functions returning row types (composite or RECORD)... */
+	bool		funcReturnsTuple;		/* true => composite or record result */			
+	Oid			returnedTypeId;			/* last value-per-call tuple type */
+	int32		returnedTypMod;			/* and subtype */
 
-	/*
-	 * Flag to remember whether we found a set-valued argument to the
-	 * function. This causes the function result to be a set as well. Valid
-	 * only when setArgsValid is true or funcResultStore isn't NULL.
-	 */
-	bool		setHasSetArg;	/* some argument returns a set */
+	/* For set-returning functions... */
+	MemoryContext argEvalContext;		/* reset before evaluating args */
+	TupleTableSlot *dematerializeSlot;	/* holds a result row from tuplestore */
 
-	/*
-	 * Flag to remember whether we have registered a shutdown callback for
-	 * this FuncExprState.	We do so only if funcResultStore or setArgsValid
-	 * has been set at least once (since all the callback is for is to release
-	 * the tuplestore or clear setArgsValid).
-	 */
-	bool		shutdown_reg;	/* a shutdown callback is registered */
+	/* Cleanup for SRFs and functions with set-valued arguments */
+	bool		shutdown_reg;	/* true => a shutdown callback is registered */
 
 	/*
 	 * Call parameter structure for the function.  This has been initialized
 	 * (by InitFunctionCallInfoData) if func.fn_oid is valid.  It also saves
-	 * argument values between calls, when setArgsValid is true.
+	 * argument values between calls when argIsDone == ExprMultiResult.
 	 */
 	FunctionCallInfoData fcinfo_data;
 } FuncExprState;
@@ -1388,19 +1372,23 @@ typedef struct SubqueryScanState
  *		Function nodes are used to scan the results of a
  *		function appearing in FROM (typically a function returning set).
  *
- *		eflags				node's capability flags
- *		tupdesc				expected return tuple description
- *		tuplestorestate		private state of tuplestore.c
+ *		tuplestorestate		private state of tuplestore.
+ *		funcexprcontext		context in which to evaluate funcexpr
  *		funcexpr			state for function expression being evaluated
  * ----------------
  */
 typedef struct FunctionScanState
 {
-	ScanState	ss;				/* its first field is NodeTag */
-	int			eflags;
-	TupleDesc	tupdesc;
+	ScanState	ss;					/* its first field is NodeTag */
+	bool		eof_underlying;		/* reached end of underlying plan? */
+	bool		materialize;		/* true => retain results in tuplestore */
+	bool		randomAccess;		/* true => support backward scan */
+	bool		returnsTuple;		/* true => composite or RECORD result */			
 	Tuplestorestate *tuplestorestate;
+	ExprContext *funcexprcontext;
 	ExprState  *funcexpr;
+	Oid			returnedTypeId;		/* latest value-per-call tuple type */
+	int32		returnedTypMod;		/* and subtype */
 } FunctionScanState;
 
 /* ----------------

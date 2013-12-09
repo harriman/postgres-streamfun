@@ -73,9 +73,9 @@ typedef struct remoteConn
 typedef struct storeInfo
 {
 	FunctionCallInfo fcinfo;
-	Tuplestorestate *tuplestore;
 	AttInMetadata *attinmeta;
 	MemoryContext tmpcontext;
+	int			nfields;
 	char	  **cstrs;
 	/* temp storage for results to avoid leaks on exception */
 	PGresult   *last_res;
@@ -86,7 +86,6 @@ typedef struct storeInfo
  * Internal declarations
  */
 static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async);
-static void prepTuplestoreResult(FunctionCallInfo fcinfo);
 static void materializeResult(FunctionCallInfo fcinfo, PGconn *conn,
 				  PGresult *res);
 static void materializeQueryResult(FunctionCallInfo fcinfo,
@@ -100,7 +99,7 @@ static remoteConn *getConnectionByName(const char *name);
 static HTAB *createConnHash(void);
 static void createNewConnection(const char *name, remoteConn *rconn);
 static void deleteConnection(const char *name);
-static char **get_pkey_attnames(Relation rel, int16 *numatts);
+static char **get_pkey_attnames(Relation rel);
 static char **get_text_array_contents(ArrayType *array, int *numitems);
 static char *get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
 static char *get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals);
@@ -536,7 +535,8 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	int			howmany = 0;
 	bool		fail = true;	/* default to backward compatible */
 
-	prepTuplestoreResult(fcinfo);
+	/* Error if our caller doesn't support the set-returning protocol. */
+	srf_check_context(fcinfo);
 
 	DBLINK_INIT;
 
@@ -598,7 +598,6 @@ dblink_fetch(PG_FUNCTION_ARGS)
 		 PQresultStatus(res) != PGRES_TUPLES_OK))
 	{
 		dblink_res_error(conname, res, "could not fetch from cursor", fail);
-		return (Datum) 0;
 	}
 	else if (PQresultStatus(res) == PGRES_COMMAND_OK)
 	{
@@ -608,9 +607,15 @@ dblink_fetch(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_CURSOR_NAME),
 				 errmsg("cursor \"%s\" does not exist", curname)));
 	}
+	else
+		materializeResult(fcinfo, conn, res);
 
-	materializeResult(fcinfo, conn, res);
-	return (Datum) 0;
+	/*
+	 * Return.  Note SRF_BASIC_RETURN_END should do the right thing whether 
+	 * we're yielding an empty set in value-per-call mode, or an empty or 
+	 * nonempty set in materialize mode.  
+	 */
+	SRF_BASIC_RETURN_END();
 }
 
 /*
@@ -663,7 +668,8 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 	PGconn	   *volatile conn = NULL;
 	volatile bool freeconn = false;
 
-	prepTuplestoreResult(fcinfo);
+	/* Our caller has to support the set returning protocol; error if not. */
+	srf_check_context(fcinfo);
 
 	DBLINK_INIT;
 
@@ -772,36 +778,12 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 	if (freeconn)
 		PQfinish(conn);
 
-	return (Datum) 0;
-}
-
-/*
- * Verify function caller can handle a tuplestore result, and set up for that.
- *
- * Note: if the caller returns without actually creating a tuplestore, the
- * executor will treat the function result as an empty set.
- */
-static void
-prepTuplestoreResult(FunctionCallInfo fcinfo)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	/* check to see if query supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
-
-	/* let the executor know we're sending back a tuplestore */
-	rsinfo->returnMode = SFRM_Materialize;
-
-	/* caller must fill these to return a non-empty result */
-	rsinfo->setResult = NULL;
-	rsinfo->setDesc = NULL;
+	/*
+	 * Return.  Note SRF_BASIC_RETURN_END should do the right thing whether 
+	 * we're yielding an empty set in value-per-call mode, or an empty or 
+	 * nonempty set in materialize mode.  
+	 */
+	SRF_BASIC_RETURN_END();
 }
 
 /*
@@ -812,17 +794,16 @@ prepTuplestoreResult(FunctionCallInfo fcinfo)
 static void
 materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	/* prepTuplestoreResult must have been called previously */
-	Assert(rsinfo->returnMode == SFRM_Materialize);
-
 	PG_TRY();
 	{
+		Tuplestorestate *tupstore;
 		TupleDesc	tupdesc;
 		bool		is_sql_cmd;
 		int			ntuples;
 		int			nfields;
+
+		/* let the caller know we're sending back a tuplestore */
+		tupstore = srf_init_materialize_mode(fcinfo);
 
 		if (PQresultStatus(res) == PGRES_COMMAND_OK)
 		{
@@ -835,6 +816,10 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 			tupdesc = CreateTemplateTupleDesc(1, false);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
+
+			/* Caller has to expect tuples in this format; else give error. */
+			srf_verify_expected_tupdesc(fcinfo, tupdesc);
+
 			ntuples = 1;
 			nfields = 1;
 		}
@@ -844,27 +829,9 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 
 			is_sql_cmd = false;
 
-			/* get a tuple descriptor for our result type */
-			switch (get_call_result_type(fcinfo, NULL, &tupdesc))
-			{
-				case TYPEFUNC_COMPOSITE:
-					/* success */
-					break;
-				case TYPEFUNC_RECORD:
-					/* failed to determine actual type of RECORD */
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("function returning record called in context "
-							   "that cannot accept type record")));
-					break;
-				default:
-					/* result type isn't composite */
-					elog(ERROR, "return type must be a row type");
-					break;
-			}
+			/* We'll build tuples in the format expected by the caller. */
+			tupdesc = srf_get_expected_tupdesc(fcinfo, true);
 
-			/* make sure we have a persistent copy of the tupdesc */
-			tupdesc = CreateTupleDescCopy(tupdesc);
 			ntuples = PQntuples(res);
 			nfields = PQnfields(res);
 		}
@@ -876,31 +843,24 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
 					 errmsg("remote query result rowtype does not match "
-							"the specified FROM clause rowtype")));
+							"the specified FROM clause rowtype"),
+					 errdetail("Number of result columns = %d (actual), %d (expected).",
+							   nfields,
+							   tupdesc->natts)));
 
 		if (ntuples > 0)
 		{
 			AttInMetadata *attinmeta;
 			int			nestlevel = -1;
-			Tuplestorestate *tupstore;
-			MemoryContext oldcontext;
 			int			row;
 			char	  **values;
 
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
+			values = (char **) palloc(nfields * sizeof(char *));
 
 			/* Set GUCs to ensure we read GUC-sensitive data types correctly */
 			if (!is_sql_cmd)
 				nestlevel = applyRemoteGucs(conn);
-
-			oldcontext = MemoryContextSwitchTo(
-									rsinfo->econtext->ecxt_per_query_memory);
-			tupstore = tuplestore_begin_heap(true, false, work_mem);
-			rsinfo->setResult = tupstore;
-			rsinfo->setDesc = tupdesc;
-			MemoryContextSwitchTo(oldcontext);
-
-			values = (char **) palloc(nfields * sizeof(char *));
 
 			/* put all tuples into the tuplestore */
 			for (row = 0; row < ntuples; row++)
@@ -931,9 +891,6 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 
 			/* clean up GUC settings, if we changed any */
 			restoreLocalGucs(nestlevel);
-
-			/* clean up and return the tuplestore */
-			tuplestore_donestoring(tupstore);
 		}
 
 		PQclear(res);
@@ -962,19 +919,34 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 					   const char *sql,
 					   bool fail)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	PGresult   *volatile res = NULL;
-	storeInfo	sinfo;
+	TupleDesc	tupdesc;
 
-	/* prepTuplestoreResult must have been called previously */
-	Assert(rsinfo->returnMode == SFRM_Materialize);
+	storeInfo	sinfo;
 
 	/* initialize storeInfo to empty */
 	memset(&sinfo, 0, sizeof(sinfo));
 	sinfo.fcinfo = fcinfo;
 
+	/* Prepare attinmeta for later data conversions */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, true);
+	sinfo.attinmeta = TupleDescGetAttInMetadata(tupdesc);
+
 	PG_TRY();
 	{
+		ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+		/*
+		 * We'll return results in a tuplestore that we freshly allocate each
+		 * time we are called, ignoring (but NOT freeing!) any tuplestore that
+		 * the caller may have provided.  This permits our storeRow() routine
+		 * to discard our tuplestore (which the caller hasn't seen) and start
+		 * a new one in case the query string yields more than one result set
+		 * from multiple SQL commands.
+		 */
+		Assert(rsinfo && IsA(rsinfo, ReturnSetInfo));	/* already checked */
+		rsinfo->setResult = NULL;	/* ignore any tuplestore from caller */
+
 		/* execute query, collecting any tuples into the tuplestore */
 		res = storeQueryResult(&sinfo, conn, sql);
 
@@ -998,12 +970,9 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 			 * storeRow didn't get called, so we need to convert the command
 			 * status string to a tuple manually
 			 */
-			TupleDesc	tupdesc;
-			AttInMetadata *attinmeta;
 			Tuplestorestate *tupstore;
 			HeapTuple	tuple;
 			char	   *values[1];
-			MemoryContext oldcontext;
 
 			/*
 			 * need a tuple descriptor representing one TEXT column to return
@@ -1012,19 +981,15 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 			tupdesc = CreateTemplateTupleDesc(1, false);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
-			attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-			oldcontext = MemoryContextSwitchTo(
-									rsinfo->econtext->ecxt_per_query_memory);
-			tupstore = tuplestore_begin_heap(true, false, work_mem);
-			rsinfo->setResult = tupstore;
-			rsinfo->setDesc = tupdesc;
-			MemoryContextSwitchTo(oldcontext);
-
-			values[0] = PQcmdStatus(res);
+			/* caller has to expect tuples in this format; else give error */
+			srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 			/* build the tuple and put it into the tuplestore. */
-			tuple = BuildTupleFromCStrings(attinmeta, values);
+			values[0] = PQcmdStatus(res);
+			tuple = BuildTupleFromCStrings(sinfo.attinmeta, values);
+
+			tupstore = srf_init_materialize_mode(fcinfo);
 			tuplestore_puttuple(tupstore, tuple);
 
 			PQclear(res);
@@ -1033,8 +998,16 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 		else
 		{
 			Assert(PQresultStatus(res) == PGRES_TUPLES_OK);
-			/* storeRow should have created a tuplestore */
-			Assert(rsinfo->setResult != NULL);
+
+			/* Error if result doesn't have the expected number of columns. */
+			if (sinfo.nfields != sinfo.attinmeta->tupdesc->natts)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("remote query result rowtype does not match "
+								"the specified FROM clause rowtype"),
+						 errdetail("Number of result columns = %d (actual), %d (expected).",
+								   sinfo.nfields,
+								   sinfo.attinmeta->tupdesc->natts)));
 
 			PQclear(res);
 			res = NULL;
@@ -1136,60 +1109,27 @@ storeRow(storeInfo *sinfo, PGresult *res, bool first)
 	HeapTuple	tuple;
 	int			i;
 	MemoryContext oldcontext;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) sinfo->fcinfo->resultinfo;
+
+	/* srf_check_context() has verified that resultinfo is present */
+	Assert(rsinfo && IsA(rsinfo, ReturnSetInfo));
 
 	if (first)
 	{
 		/* Prepare for new result set */
-		ReturnSetInfo *rsinfo = (ReturnSetInfo *) sinfo->fcinfo->resultinfo;
-		TupleDesc	tupdesc;
+		sinfo->nfields = nfields;
 
 		/*
 		 * It's possible to get more than one result set if the query string
 		 * contained multiple SQL commands.  In that case, we follow PQexec's
 		 * traditional behavior of throwing away all but the last result.
 		 */
-		if (sinfo->tuplestore)
-			tuplestore_end(sinfo->tuplestore);
-		sinfo->tuplestore = NULL;
-
-		/* get a tuple descriptor for our result type */
-		switch (get_call_result_type(sinfo->fcinfo, NULL, &tupdesc))
-		{
-			case TYPEFUNC_COMPOSITE:
-				/* success */
-				break;
-			case TYPEFUNC_RECORD:
-				/* failed to determine actual type of RECORD */
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("function returning record called in context "
-								"that cannot accept type record")));
-				break;
-			default:
-				/* result type isn't composite */
-				elog(ERROR, "return type must be a row type");
-				break;
-		}
-
-		/* make sure we have a persistent copy of the tupdesc */
-		tupdesc = CreateTupleDescCopy(tupdesc);
-
-		/* check result and tuple descriptor have the same number of columns */
-		if (nfields != tupdesc->natts)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
-					 errmsg("remote query result rowtype does not match "
-							"the specified FROM clause rowtype")));
-
-		/* Prepare attinmeta for later data conversions */
-		sinfo->attinmeta = TupleDescGetAttInMetadata(tupdesc);
+		if (rsinfo->setResult)
+			tuplestore_clear(rsinfo->setResult);
 
 		/* Create a new, empty tuplestore */
-		oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
-		sinfo->tuplestore = tuplestore_begin_heap(true, false, work_mem);
-		rsinfo->setResult = sinfo->tuplestore;
-		rsinfo->setDesc = tupdesc;
-		MemoryContextSwitchTo(oldcontext);
+		else
+			srf_init_materialize_mode(sinfo->fcinfo);
 
 		/* Done if empty resultset */
 		if (PQntuples(res) == 0)
@@ -1215,6 +1155,17 @@ storeRow(storeInfo *sinfo, PGresult *res, bool first)
 
 	/* Should have a single-row result if we get here */
 	Assert(PQntuples(res) == 1);
+	Assert(rsinfo->setResult);
+
+	/* All rows of result set should have the same number of columns. */
+	Assert(nfields == sinfo->nfields);
+
+	/*
+	 * Don't bother to store the rows of a result set having the wrong number
+	 * of columns.  If it's the last result set, error is reported later on.
+	 */
+	if (nfields != sinfo->attinmeta->tupdesc->natts)
+		return;
 
 	/*
 	 * Do the following work in a temp context that we reset after each tuple.
@@ -1237,7 +1188,7 @@ storeRow(storeInfo *sinfo, PGresult *res, bool first)
 	/* Convert row to a tuple, and add it to the tuplestore */
 	tuple = BuildTupleFromCStrings(sinfo->attinmeta, sinfo->cstrs);
 
-	tuplestore_puttuple(sinfo->tuplestore, tuple);
+	tuplestore_puttuple(rsinfo->setResult, tuple);
 
 	/* Clean up */
 	MemoryContextSwitchTo(oldcontext);
@@ -1479,107 +1430,48 @@ PG_FUNCTION_INFO_V1(dblink_get_pkey);
 Datum
 dblink_get_pkey(PG_FUNCTION_ARGS)
 {
-	int16		numatts;
 	char	  **results;
-	FuncCallContext *funcctx;
-	int32		call_cntr;
-	int32		max_calls;
-	AttInMetadata *attinmeta;
-	MemoryContext oldcontext;
+	Relation	rel;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	int			i;
 
-	/* stuff done only on the first call of the function */
-	if (SRF_IS_FIRSTCALL())
-	{
-		Relation	rel;
-		TupleDesc	tupdesc;
+	/* get the relation's primary key column names */
+	rel = get_rel_from_relname(PG_GETARG_TEXT_P(0), AccessShareLock, ACL_SELECT);
+	results = get_pkey_attnames(rel);
+	relation_close(rel, NoLock);			/* keep lock until end of xact */
 
-		/* create a function context for cross-call persistence */
-		funcctx = SRF_FIRSTCALL_INIT();
-
-		/*
-		 * switch to memory context appropriate for multiple function calls
-		 */
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-		/* open target relation */
-		rel = get_rel_from_relname(PG_GETARG_TEXT_P(0), AccessShareLock, ACL_SELECT);
-
-		/* get the array of attnums */
-		results = get_pkey_attnames(rel, &numatts);
-
-		relation_close(rel, AccessShareLock);
-
-		/*
-		 * need a tuple descriptor representing one INT and one TEXT column
-		 */
-		tupdesc = CreateTemplateTupleDesc(2, false);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "position",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "colname",
-						   TEXTOID, -1, 0);
-
-		/*
-		 * Generate attribute metadata needed later to produce tuples from raw
-		 * C strings
-		 */
-		attinmeta = TupleDescGetAttInMetadata(tupdesc);
-		funcctx->attinmeta = attinmeta;
-
-		if ((results != NULL) && (numatts > 0))
-		{
-			funcctx->max_calls = numatts;
-
-			/* got results, keep track of them */
-			funcctx->user_fctx = results;
-		}
-		else
-		{
-			/* fast track when no results */
-			MemoryContextSwitchTo(oldcontext);
-			SRF_RETURN_DONE(funcctx);
-		}
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	/* stuff done on every call of the function */
-	funcctx = SRF_PERCALL_SETUP();
+	/* return empty set if relation has no primary key */
+	if (results == NULL)
+		SRF_BASIC_RETURN_END();
 
 	/*
-	 * initialize per-call variables
+	 * need a tuple descriptor representing one INT and one TEXT column
 	 */
-	call_cntr = funcctx->call_cntr;
-	max_calls = funcctx->max_calls;
+	tupdesc = CreateTemplateTupleDesc(2, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "position", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "colname", TEXTOID, -1, 0);
 
-	results = (char **) funcctx->user_fctx;
-	attinmeta = funcctx->attinmeta;
+	/* our result format must be compatible with caller's expected format */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
-	if (call_cntr < max_calls)	/* do when there is more left to send */
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = srf_init_materialize_mode(fcinfo);
+
+	for (i = 0; results[i] != NULL; i++)
 	{
-		char	  **values;
-		HeapTuple	tuple;
-		Datum		result;
+		Datum	    values[2];
+		bool		isnull[2];
 
-		values = (char **) palloc(2 * sizeof(char *));
-		values[0] = (char *) palloc(12);		/* sign, 10 digits, '\0' */
+		values[0] = Int32GetDatum(i+1);
+		values[1] = CStringGetTextDatum(results[i]);
 
-		sprintf(values[0], "%d", call_cntr + 1);
+		isnull[0] = false;
+		isnull[1] = false;
 
-		values[1] = results[call_cntr];
-
-		/* build the tuple */
-		tuple = BuildTupleFromCStrings(attinmeta, values);
-
-		/* make the tuple into a datum */
-		result = HeapTupleGetDatum(tuple);
-
-		SRF_RETURN_NEXT(funcctx, result);
+		tuplestore_putvalues(tupstore, tupdesc, values, isnull);
 	}
-	else
-	{
-		/* do when there is no more left */
-		SRF_RETURN_DONE(funcctx);
-	}
+	SRF_BASIC_RETURN_END();
 }
 
 
@@ -1877,23 +1769,17 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	PGconn	   *conn = NULL;
 	remoteConn *rconn = NULL;
 	PGnotify   *notify;
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 
-	prepTuplestoreResult(fcinfo);
+	/* let the caller know we're sending back a tuplestore */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	DBLINK_INIT;
 	if (PG_NARGS() == 1)
 		DBLINK_GET_NAMED_CONN;
 	else
 		conn = pconn->conn;
-
-	/* create the tuplestore in per-query memory */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
 
 	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "notify_name",
@@ -1903,11 +1789,8 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "extra",
 					   TEXTOID, -1, 0);
 
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
 	PQconsumeInput(conn);
 	while ((notify = PQnotifies(conn)) != NULL)
@@ -1935,11 +1818,7 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 		PQfreemem(notify);
 		PQconsumeInput(conn);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
-	return (Datum) 0;
+	SRF_BASIC_RETURN_END();
 }
 
 /*
@@ -2020,21 +1899,19 @@ dblink_fdw_validator(PG_FUNCTION_ARGS)
  * get_pkey_attnames
  *
  * Get the primary key attnames for the given relation.
- * Return NULL, and set numatts = 0, if no primary key exists.
+ * Return NULL if no primary key exists.
  */
 static char **
-get_pkey_attnames(Relation rel, int16 *numatts)
+get_pkey_attnames(Relation rel)
 {
 	Relation	indexRelation;
 	ScanKeyData skey;
 	SysScanDesc scan;
 	HeapTuple	indexTuple;
 	int			i;
+	int			numatts;
 	char	  **result = NULL;
 	TupleDesc	tupdesc;
-
-	/* initialize numatts to 0 in case no primary key exists */
-	*numatts = 0;
 
 	tupdesc = rel->rd_att;
 
@@ -2055,13 +1932,15 @@ get_pkey_attnames(Relation rel, int16 *numatts)
 		/* we're only interested if it is the primary key */
 		if (index->indisprimary)
 		{
-			*numatts = index->indnatts;
-			if (*numatts > 0)
+			numatts = index->indnatts;
+			if (numatts > 0)
 			{
-				result = (char **) palloc(*numatts * sizeof(char *));
+				result = (char **) palloc((numatts + 1) * sizeof(result[0]));
 
-				for (i = 0; i < *numatts; i++)
+				for (i = 0; i < numatts; i++)
 					result[i] = SPI_fname(tupdesc, index->indkey.values[i]);
+
+				result[i] = NULL;
 			}
 			break;
 		}

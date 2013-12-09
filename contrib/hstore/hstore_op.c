@@ -865,15 +865,7 @@ setup_firstcall(FuncCallContext *funcctx, HStore *hs,
 	funcctx->user_fctx = (void *) st;
 
 	if (fcinfo)
-	{
-		TupleDesc	tupdesc;
-
-		/* Build a tuple descriptor for our result type */
-		if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-			elog(ERROR, "return type must be a row type");
-
-		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
-	}
+		funcctx->tuple_desc = srf_get_expected_tupdesc(fcinfo, true);
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -939,15 +931,7 @@ hstore_svals(PG_FUNCTION_ARGS)
 		HEntry	   *entries = ARRPTR(hs);
 
 		if (HS_VALISNULL(entries, i))
-		{
-			ReturnSetInfo *rsi;
-
-			/* ugly ugly ugly. why no macro for this? */
-			(funcctx)->call_cntr++;
-			rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-			rsi->isDone = ExprMultipleResult;
-			PG_RETURN_NULL();
-		}
+			SRF_RETURN_NEXT_NULL(funcctx);
 		else
 		{
 			text	   *item;

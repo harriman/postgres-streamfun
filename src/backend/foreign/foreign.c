@@ -17,9 +17,11 @@
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
+#include "catalog/pg_type.h"					/* TEXTOID */
 #include "catalog/pg_user_mapping.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "funcapi.h"							/* srf_init_materialize_mode */
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
@@ -404,62 +406,34 @@ GetFdwRoutineForRelation(Relation relation, bool makecopy)
  * tuplestore usable in SRF.
  */
 static void
-deflist_to_tuplestore(ReturnSetInfo *rsinfo, List *options)
+deflist_to_tuplestore(FunctionCallInfo fcinfo, List *options)
 {
 	ListCell   *cell;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
 	Datum		values[2];
 	bool		nulls[2];
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+	/* Build a tuple descriptor for our result type. */
+	tupdesc = CreateTemplateTupleDesc(2, false);
+	TupleDescInitEntry(tupdesc, 1, "option_name", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "option_value", TEXTOID, -1, 0);
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
-	/*
-	 * Now prepare the result set.
-	 */
-	tupdesc = CreateTupleDescCopy(rsinfo->expectedDesc);
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
+	nulls[0] = nulls[1] = false;
 	foreach(cell, options)
 	{
 		DefElem    *def = lfirst(cell);
 
 		values[0] = CStringGetTextDatum(def->defname);
-		nulls[0] = false;
-		if (def->arg)
-		{
-			values[1] = CStringGetTextDatum(((Value *) (def->arg))->val.str);
-			nulls[1] = false;
-		}
-		else
-		{
-			values[1] = (Datum) 0;
-			nulls[1] = true;
-		}
+		values[1] = CStringGetTextDatum(((Value *) def->arg)->val.str);
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
-
-	MemoryContextSwitchTo(oldcontext);
 }
 
 
@@ -472,8 +446,7 @@ pg_options_to_table(PG_FUNCTION_ARGS)
 {
 	Datum		array = PG_GETARG_DATUM(0);
 
-	deflist_to_tuplestore((ReturnSetInfo *) fcinfo->resultinfo,
-						  untransformRelOptions(array));
+	deflist_to_tuplestore(fcinfo, untransformRelOptions(array));
 
 	return (Datum) 0;
 }

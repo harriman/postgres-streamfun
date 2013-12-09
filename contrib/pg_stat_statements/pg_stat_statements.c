@@ -46,8 +46,9 @@
 #include <unistd.h>
 
 #include "access/hash.h"
+#include "catalog/pg_type.h"			/* OIDOID, TEXTOID, INT8OID */
 #include "executor/instrument.h"
-#include "funcapi.h"
+#include "funcapi.h"					/* srf_init_materialize_mode */
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "parser/analyze.h"
@@ -1063,7 +1064,8 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
+				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries"),
+				 fmgr_call_errcontext(fcinfo, true)));
 	entry_reset();
 	PG_RETURN_VOID();
 }
@@ -1077,48 +1079,62 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 Datum
 pg_stat_statements(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
 	Oid			userid = GetUserId();
 	bool		is_superuser = superuser();
 	HASH_SEQ_STATUS hash_seq;
 	pgssEntry  *entry;
+	int			nc = 0;
 	bool		sql_supports_v1_1_counters = true;
 
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
+				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries"),
+				 fmgr_call_errcontext(fcinfo, true)));
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+	/* Caller might be expecting old result tuple format  */
+	tupdesc = srf_get_expected_tupdesc(fcinfo, false);
+	if (tupdesc && tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_0)
+	{
+		sql_supports_v1_1_counters = false;
+		tupdesc = CreateTemplateTupleDesc(PG_STAT_STATEMENTS_COLS_V1_0, false);
+	}
+	else
+		tupdesc = CreateTemplateTupleDesc(PG_STAT_STATEMENTS_COLS, false);
 
 	/* Build a tuple descriptor for our result type */
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_0)
-		sql_supports_v1_1_counters = false;
+	TupleDescInitEntry(tupdesc, ++nc, "userid", OIDOID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "dbid", OIDOID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "query",	TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "calls",	INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "total_time", FLOAT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "rows", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "shared_blks_hit", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "shared_blks_read", INT8OID, -1, 0);
+	if (sql_supports_v1_1_counters)
+		TupleDescInitEntry(tupdesc, ++nc, "shared_blks_dirtied", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "shared_blks_written", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "local_blks_hit", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "local_blks_read", INT8OID, -1, 0);
+	if (sql_supports_v1_1_counters)
+		TupleDescInitEntry(tupdesc, ++nc, "local_blks_dirtied", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "local_blks_written", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "temp_blks_read", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++nc, "temp_blks_written", INT8OID, -1, 0);
+	if (sql_supports_v1_1_counters)
+	{
+		TupleDescInitEntry(tupdesc, ++nc, "blk_read_time", FLOAT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, ++nc, "blk_write_time", FLOAT8OID, -1, 0);
+	}
+	Assert(nc == tupdesc->natts);
 
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+	/* Make sure the caller expects tuples in this format; else give error. */
+	srf_verify_expected_tupdesc(fcinfo, tupdesc);
 
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	/* We will put our results into a tuplestore for the caller. */
+	tupstore = srf_init_materialize_mode(fcinfo);
 
 	LWLockAcquire(pgss->lock, LW_SHARED);
 
@@ -1186,16 +1202,12 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			values[i++] = Float8GetDatumFast(tmp.blk_write_time);
 		}
 
-		Assert(i == (sql_supports_v1_1_counters ?
-					 PG_STAT_STATEMENTS_COLS : PG_STAT_STATEMENTS_COLS_V1_0));
+		Assert(i == nc);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 
 	LWLockRelease(pgss->lock);
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
 }

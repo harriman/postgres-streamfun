@@ -20,6 +20,7 @@
 #include "access/tupdesc.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
+#include "utils/tuplestore.h"
 
 
 /*-------------------------------------------------------------------------
@@ -230,10 +231,71 @@ extern HeapTuple BuildTupleFromCStrings(AttInMetadata *attinmeta, char **values)
 extern TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc);
 
 
+/*
+ * Convenience macros for returning from set-returning functions.  These are 
+ * lower-level than the ones further below that maintain a FuncCallContext.
+ *
+ * Value-per-call mode:  Use SRF_BASIC_RETURN_END() to return the empty set, 
+ * or to finish a result set that has no more items.  To return a value or 
+ * NULL, after which the caller will call again to continue the set, use 
+ * SRF_BASIC_RETURN_NEXT(datum) or SRF_BASIC_RETURN_NEXT_NULL().  To return 
+ * the final value of a set without being called again, you may optionally use 
+ * SRF_BASIC_RETURN_NEXT_AND_END(datum) or SRF_BASIC_RETURN_NEXT_NULL_AND_END.
+ * 
+ * Materialize mode:  The return value and fcinfo->isnull flag are ignored; 
+ * so always return 0; and don't use SRF_BASIC_RETURN_NEXT_NULL().  To produce
+ * the empty set, or to end an incrementally produced result set, simply 
+ * return in any way you choose, with nothing added to the tuplestore; but if 
+ * you want the same code path to be shared with value per call mode, use 
+ * SRF_BASIC_RETURN_END(), which works in either mode.  To produce a nonempty 
+ * set, add some tuples to the tuplestore; then use SRF_BASIC_RETURN_NEXT(0) 
+ * if you want to continue adding to the same result set when called again; or 
+ * use SRF_BASIC_RETURN_END() or SRF_BASIC_RETURN_NEXT_AND_END(0) to conclude 
+ * the result set without being called again.  
+ * 
+ * Any mode:  When you know the resultinfo->isDone flag already has the right
+ * setting (or in materialize mode, will be ignored because you haven't added 
+ * to the tuplestore), you can use PG_RETURN_VOID() or simply return 0, saving 
+ * one assignment.  The caller initializes isDone = ExprSingleResult before 
+ * the first call for each result set, and ExprMultipleResult on the second 
+ * and subsequent calls.
+ *
+ * After a result set has ended, a new result set begins with the next call.
+ */
+#define SRF_BASIC_RETURN_NEXT(_result) \
+	do { \
+		((ReturnSetInfo *) fcinfo->resultinfo)->isDone = ExprMultipleResult; \
+		PG_RETURN_DATUM(_result); \
+	} while (0)
+
+#define SRF_BASIC_RETURN_NEXT_NULL() \
+	do { \
+		((ReturnSetInfo *) fcinfo->resultinfo)->isDone = ExprMultipleResult; \
+		PG_RETURN_NULL(); \
+	} while (0)
+
+#define SRF_BASIC_RETURN_NEXT_AND_END(_result) \
+	do { \
+		((ReturnSetInfo *) fcinfo->resultinfo)->isDone = ExprSingleResult; \
+		PG_RETURN_DATUM(_result); \
+	} while (0)
+
+#define SRF_BASIC_RETURN_NEXT_NULL_AND_END() \
+	do { \
+		((ReturnSetInfo *) fcinfo->resultinfo)->isDone = ExprSingleResult; \
+		PG_RETURN_NULL(); \
+	} while (0)
+
+#define SRF_BASIC_RETURN_END() \
+	do { \
+		((ReturnSetInfo *) fcinfo->resultinfo)->isDone = ExprEndResult; \
+		PG_RETURN_VOID(); \
+	} while (0)
+
 /*----------
  *		Support for Set Returning Functions (SRFs)
  *
- * The basic API for SRFs looks something like:
+ * SRFs may optionally use a convenience API which looks something like:
  *
  * Datum
  * my_Set_Returning_Function(PG_FUNCTION_ARGS)
@@ -246,6 +308,9 @@ extern TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc);
  *	if (SRF_IS_FIRSTCALL())
  *	{
  *		funcctx = SRF_FIRSTCALL_INIT();
+ *		<if result set is to be returned in a tuplestore>
+ *			tuplestore = srf_init_materialize_mode(fcinfo);
+ *		<endif tuplestore>
  *		// switch context when allocating stuff to be used in later calls
  *		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
  *		<user defined code>
@@ -256,20 +321,33 @@ extern TupleTableSlot *TupleDescGetSlot(TupleDesc tupdesc);
  *		// return to original context when allocating transient memory
  *		MemoryContextSwitchTo(oldcontext);
  *	}
- *	<user defined code>
- *	funcctx = SRF_PERCALL_SETUP();
- *	<user defined code>
- *
- *	if (funcctx->call_cntr < funcctx->max_calls)
- *	{
- *		<user defined code>
- *		<obtain result Datum>
- *		SRF_RETURN_NEXT(funcctx, result);
- *	}
  *	else
- *		SRF_RETURN_DONE(funcctx);
- * }
+ *	{
+ *		funcctx = SRF_PERCALL_SETUP();
+ *		<user defined code>
+ *	}
+ *	<user defined code>
  *
+ *	<if using materialize mode>
+ *		<put result tuples into tuplestore>
+ *		<if you want to be called again to add more tuples to this result set>
+ *			SRF_RETURN_NEXT(funcctx, (Datum) 0);
+ *		<or if you're finished with this result set>
+ *			PG_RETURN_VOID();
+ *		<endif>
+ *	<endif materialize mode>
+ *			
+ *	<if using value-per-call mode>
+ *		<if all values have been returned already for this result set>
+ *			SRF_RETURN_DONE(funcctx);  <or>  SRF_BASIC_RETURN_END();
+ *		<or if returning a NULL value>
+ *			SRF_RETURN_NEXT_NULL(funcctx);
+ *		<or if returning a non-NULL value>
+ *			<obtain result Datum>
+ *			SRF_RETURN_NEXT(funcctx, result);
+ *		<endif>
+ *	<endif value-per-call>
+ * }
  *----------
  */
 
@@ -286,20 +364,27 @@ extern void end_MultiFuncCall(PG_FUNCTION_ARGS, FuncCallContext *funcctx);
 
 #define SRF_RETURN_NEXT(_funcctx, _result) \
 	do { \
-		ReturnSetInfo	   *rsi; \
 		(_funcctx)->call_cntr++; \
-		rsi = (ReturnSetInfo *) fcinfo->resultinfo; \
-		rsi->isDone = ExprMultipleResult; \
-		PG_RETURN_DATUM(_result); \
+		SRF_BASIC_RETURN_NEXT(_result); \
+	} while (0)
+
+#define SRF_RETURN_NEXT_NULL(_funcctx) \
+	do { \
+		(_funcctx)->call_cntr++; \
+		SRF_BASIC_RETURN_NEXT_NULL(); \
 	} while (0)
 
 #define  SRF_RETURN_DONE(_funcctx) \
 	do { \
-		ReturnSetInfo	   *rsi; \
 		end_MultiFuncCall(fcinfo, _funcctx); \
-		rsi = (ReturnSetInfo *) fcinfo->resultinfo; \
-		rsi->isDone = ExprEndResult; \
-		PG_RETURN_NULL(); \
+		SRF_BASIC_RETURN_END(); \
 	} while (0)
+
+
+/* from funcapi.c */
+extern void srf_check_context(FunctionCallInfo fcinfo);
+extern Tuplestorestate *srf_init_materialize_mode(FunctionCallInfo fcinfo);
+extern TupleDesc srf_get_expected_tupdesc(FunctionCallInfo fcinfo, bool isrequired);
+extern void srf_verify_expected_tupdesc(FunctionCallInfo fcinfo, TupleDesc actualtupdesc);
 
 #endif   /* FUNCAPI_H */

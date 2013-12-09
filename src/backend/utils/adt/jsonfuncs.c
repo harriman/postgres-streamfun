@@ -906,39 +906,13 @@ each_worker(PG_FUNCTION_ARGS, bool as_text)
 	text	   *json = PG_GETARG_TEXT_P(0);
 	JsonLexContext *lex = makeJsonLexContext(json, true);
 	JsonSemAction *sem;
-	ReturnSetInfo *rsi;
-	MemoryContext old_cxt;
-	TupleDesc	tupdesc;
 	EachState  *state;
 
 	state = palloc0(sizeof(EachState));
 	sem = palloc0(sizeof(JsonSemAction));
 
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that "
-						"cannot accept a set")));
-
-
-	rsi->returnMode = SFRM_Materialize;
-
-	(void) get_call_result_type(fcinfo, NULL, &tupdesc);
-
-	/* make these in a sufficiently long-lived memory context */
-	old_cxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-
-	state->ret_tdesc = CreateTupleDescCopy(tupdesc);
-	BlessTupleDesc(state->ret_tdesc);
-	state->tuple_store =
-		tuplestore_begin_heap(rsi->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	MemoryContextSwitchTo(old_cxt);
+	state->tuple_store = srf_init_materialize_mode(fcinfo);
+	state->ret_tdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	sem->semstate = (void *) state;
 	sem->array_start = each_array_start;
@@ -958,10 +932,7 @@ each_worker(PG_FUNCTION_ARGS, bool as_text)
 
 	pg_parse_json(lex, sem);
 
-	rsi->setResult = state->tuple_store;
-	rsi->setDesc = state->ret_tdesc;
-
-	PG_RETURN_NULL();
+	return (Datum) 0;
 }
 
 
@@ -992,7 +963,6 @@ each_object_field_end(void *state, char *fname, bool isnull)
 	MemoryContext old_cxt;
 	int			len;
 	text	   *val;
-	HeapTuple	tuple;
 	Datum		values[2];
 	bool		nulls[2] = {false, false};
 
@@ -1022,10 +992,7 @@ each_object_field_end(void *state, char *fname, bool isnull)
 		values[1] = PointerGetDatum(val);
 	}
 
-
-	tuple = heap_form_tuple(_state->ret_tdesc, values, nulls);
-
-	tuplestore_puttuple(_state->tuple_store, tuple);
+	tuplestore_putvalues(_state->tuple_store, _state->ret_tdesc, values, nulls);
 
 	/* clean up and switch back */
 	MemoryContextSwitchTo(old_cxt);
@@ -1075,40 +1042,13 @@ json_array_elements(PG_FUNCTION_ARGS)
 	/* elements doesn't need any escaped strings, so use false here */
 	JsonLexContext *lex = makeJsonLexContext(json, false);
 	JsonSemAction *sem;
-	ReturnSetInfo *rsi;
-	MemoryContext old_cxt;
-	TupleDesc	tupdesc;
 	ElementsState *state;
 
 	state = palloc0(sizeof(ElementsState));
 	sem = palloc0(sizeof(JsonSemAction));
 
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that "
-						"cannot accept a set")));
-
-
-	rsi->returnMode = SFRM_Materialize;
-
-	/* it's a simple type, so don't use get_call_result_type() */
-	tupdesc = rsi->expectedDesc;
-
-	/* make these in a sufficiently long-lived memory context */
-	old_cxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-
-	state->ret_tdesc = CreateTupleDescCopy(tupdesc);
-	BlessTupleDesc(state->ret_tdesc);
-	state->tuple_store =
-		tuplestore_begin_heap(rsi->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	MemoryContextSwitchTo(old_cxt);
+	state->tuple_store = srf_init_materialize_mode(fcinfo);
+	state->ret_tdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	sem->semstate = (void *) state;
 	sem->object_start = elements_object_start;
@@ -1125,10 +1065,7 @@ json_array_elements(PG_FUNCTION_ARGS)
 
 	pg_parse_json(lex, sem);
 
-	rsi->setResult = state->tuple_store;
-	rsi->setDesc = state->ret_tdesc;
-
-	PG_RETURN_NULL();
+	PG_RETURN_VOID();
 }
 
 static void
@@ -1564,8 +1501,6 @@ json_populate_recordset(PG_FUNCTION_ARGS)
 	Oid			argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
 	text	   *json;
 	bool		use_json_as_text;
-	ReturnSetInfo *rsi;
-	MemoryContext old_cxt;
 	Oid			tupType;
 	int32		tupTypmod;
 	HeapTupleHeader rec;
@@ -1583,43 +1518,15 @@ json_populate_recordset(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("first argument of json_populate_recordset must be a row type")));
 
-	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that "
-						"cannot accept a set")));
-
-
-	rsi->returnMode = SFRM_Materialize;
-
-	/*
-	 * get the tupdesc from the result set info - it must be a record type
-	 * because we already checked that arg1 is a record type.
-	 */
-	(void) get_call_result_type(fcinfo, NULL, &tupdesc);
-
 	state = palloc0(sizeof(PopulateRecordsetState));
 	sem = palloc0(sizeof(JsonSemAction));
 
-
-	/* make these in a sufficiently long-lived memory context */
-	old_cxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-
-	state->ret_tdesc = CreateTupleDescCopy(tupdesc);
-	BlessTupleDesc(state->ret_tdesc);
-	state->tuple_store =
-		tuplestore_begin_heap(rsi->allowedModes & SFRM_Materialize_Random,
-							  false, work_mem);
-
-	MemoryContextSwitchTo(old_cxt);
+	state->tuple_store = srf_init_materialize_mode(fcinfo);
+	state->ret_tdesc = srf_get_expected_tupdesc(fcinfo, true);
 
 	/* if the json is null send back an empty set */
 	if (PG_ARGISNULL(1))
-		PG_RETURN_NULL();
+		PG_RETURN_VOID();
 
 	json = PG_GETARG_TEXT_P(1);
 
@@ -1628,6 +1535,7 @@ json_populate_recordset(PG_FUNCTION_ARGS)
 	else
 		rec = PG_GETARG_HEAPTUPLEHEADER(0);
 
+	tupdesc = state->ret_tdesc;
 	tupType = tupdesc->tdtypeid;
 	tupTypmod = tupdesc->tdtypmod;
 	ncolumns = tupdesc->natts;
@@ -1680,11 +1588,7 @@ json_populate_recordset(PG_FUNCTION_ARGS)
 
 	pg_parse_json(lex, sem);
 
-	rsi->setResult = state->tuple_store;
-	rsi->setDesc = state->ret_tdesc;
-
-	PG_RETURN_NULL();
-
+	PG_RETURN_VOID();
 }
 
 static void
@@ -1728,7 +1632,6 @@ populate_recordset_object_end(void *state)
 	TupleDesc	tupdesc = _state->ret_tdesc;
 	JsonHashEntry *hashentry;
 	HeapTupleHeader rec = _state->rec;
-	HeapTuple	rettuple;
 
 	if (_state->lex->lex_level > 1)
 		return;
@@ -1820,9 +1723,7 @@ populate_recordset_object_end(void *state)
 		}
 	}
 
-	rettuple = heap_form_tuple(tupdesc, values, nulls);
-
-	tuplestore_puttuple(_state->tuple_store, rettuple);
+	tuplestore_putvalues(_state->tuple_store, tupdesc, values, nulls);
 
 	hash_destroy(json_hash);
 }
